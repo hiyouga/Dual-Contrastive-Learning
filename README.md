@@ -25,9 +25,9 @@ Contrastive learning has achieved remarkable success in representation learning 
 ## Requirement
 
 - Python >= 3.7
-- torch >= 1.9.0
+- torch = 1.7.0
 - numpy >= 1.17.2
-- transformers >= 4.15.0
+- transformers = 4.9.2
 
 ## Preparation
 
