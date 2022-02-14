@@ -28,15 +28,6 @@ def preprocess_pos_ratio(dataset, load_directory='datasets',
         'procon',
         'SUBJ',
         'TREC',
-        'Restaurants',
-        'Laptops',
-        'Tweets',
-        'Restaurants16',
-        'IMDB',
-        'agnews',
-        'yahoo',
-        'CR',
-        'SUBJ'
     ]
     assert (0. <= percentage <= 1.)
     if load_directory == 'datasets_processed':
