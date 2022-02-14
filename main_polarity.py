@@ -14,6 +14,23 @@ from datetime import datetime
 from sklearn import metrics
 import pandas as pd
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from prefetch_generator import BackgroundGenerator
+from nltk.corpus import wordnet
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+import corenlp
+from torchnlp.encoders import LabelEncoder
+
+sys.path.append("../")
+from transformers import BertTokenizer, BertForMaskedLM, BertConfig, RobertaTokenizer
+from model import AttBERTForPolarity, ROBERTAForPolarity
+from data_utils import MyDataset
+from loss_func import CrossEntropy
+import torch.nn.functional as F
+
 MAX_LENGTH = 512
 # trans_dict = {"[positive]": "[negative]", "[negative]": "[positive]",
 #               "[entailment]": "[contradiction]", "[contradiction]": "[entailment]",
@@ -106,6 +123,7 @@ def collate_fn(batch, label_length, label_start, label_end, LABEL_CLASS):
 
 
 class Instructor():
+    ''' Model training and evaluation。使用torchnlp进行预处理，使用torch进行Dataset和Loader '''
     def __init__(self, opt):  # prepare for training the model
         train_data, test_data = self.load_data(opt.dataset, directory=opt.directory, percentage=opt.percentage)
         self._initialization(opt, train_data, test_data)
@@ -127,6 +145,16 @@ class Instructor():
             'procon',
             'SUBJ',
             'TREC',
+            'Restaurants',
+            'Restaurants16',
+            'Laptops',
+            'Tweets',
+            'IMDB',
+            'agnews',
+            'yahoo',
+            'CR',
+            'SUBJ',
+            'procon'
         ]
         if dataset not in datasets:
             raise ValueError('dataset: {} not in support list!'.format(dataset))
@@ -179,8 +207,8 @@ class Instructor():
         senti_label_encoder = LabelEncoder(senti_label_corpus, reserved_labels=[], unknown_index=None)
         opt.label_class = len(senti_label_encoder.vocab)
 
-        # our model
-        opt.gumbel_softmax = False
+        # our model，这个模型是为了其bert属性的训练参数，作为lm model的初始参数
+        opt.gumbel_softmax = False  # 设置为False，以读取之前使用gumbel_softmax=False的AttBERT模型参数
         if opt.model_type == "bert":
             model = AttBERTForPolarity(opt).to(opt.device)
             tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
@@ -190,6 +218,7 @@ class Instructor():
         else:
             raise ValueError("wrong model type!")
 
+        ''' 给train_data加上condition '''
         max_length = 0
         label_token2idx = senti_label_encoder.token_to_index
         list_labels = list(label_token2idx.keys())
@@ -545,14 +574,6 @@ class Instructor():
                 end += label_length[idx+1]
         return out
 
-    # def _calculate_contrast_loss(self, ori, syn, list):
-    #     # ori, syn, ant = torch.tanh(ori), torch.tanh(syn), torch.tanh(ant)
-    #     simi_syn = torch.exp(torch.sum(torch.mul(ori, syn), dim=1))  # (bs, )
-    #     simi_ant = torch.exp(torch.sum(torch.mul(ori, ant), dim=1))  # (bs, )
-    #     batch_loss = torch.log(torch.clamp((simi_syn + 1e-6) / (simi_syn + simi_ant + 1e-6), min=1e-6))  # (bs, )
-    #     loss = - torch.mean(batch_loss)
-    #     return loss
-
     def _contrast_loss(self, cls_feature, label_feature, labels):
         normed_cls_feature = F.normalize(cls_feature, dim=-1)
         normed_label_feature = F.normalize(label_feature, dim=-1)
@@ -674,17 +695,9 @@ class Instructor():
         recall = metrics.recall_score(labels_all.detach().cpu(), torch.argmax(predicts_all, -1).detach().cpu(), average='macro')
         return test_loss / n_test, n_correct / n_test, macro_f1, precision, recall
 
-    def _run(self, all_best_acc):
-        bert_params = [p for name, p in self.model.named_parameters()
-                       if p.requires_grad and name.startswith(self.opt.model_type)]
-        bert_params_id = [id(p) for name, p in self.model.named_parameters()
-                       if p.requires_grad and name.startswith(self.opt.model_type)]
-        other_params = filter(lambda p: p.requires_grad and id(p) not in bert_params_id,
-                              self.model.parameters())
-        _params = [
-            {"params": bert_params, "lr": self.opt.lr},
-            {"params": other_params, "lr": self.opt.lr * 10},
-        ]
+    def _run(self):
+        all_best_acc = 0
+        _params = [p for name, p in self.model.named_parameters() if p.requires_grad]
         if opt.optimizer_name.lower() == "adam":
             optimizer = torch.optim.Adam(_params, lr=self.opt.lr, weight_decay=self.opt.l2reg)
         elif opt.optimizer_name.lower() == "adamw":
@@ -714,9 +727,9 @@ class Instructor():
             train_loss, ce_loss, mlm_loss, list_con_loss, train_acc, used_time = self._train(optimizer, criterion, scaler, warm_up)
             test_loss, test_acc, test_f1, precision, recall = self._test(criterion, scaler)
             list_con_loss = [round(loss, 4) for loss in list_con_loss]
-            print("Epoch: {} | train_loss: {:.4f} | ce_loss: {:.4f} | mlm_loss: {:.4f} contrast_loss: {} | train_time: {:.4f} | lr: {:.8f}\n"
+            print("Epoch: {} | train_loss: {:.4f} | train_time: {:.4f} | lr: {:.8f}"
                   "\ttrain_acc: {:.4f} | test_loss: {:.4f} | test_acc: {:.4f} | test_f1: {:.4f}".format(
-                epoch, train_loss, ce_loss, mlm_loss, list_con_loss, used_time, cur_lr, train_acc, test_loss, test_acc, test_f1
+                epoch, train_loss, used_time, cur_lr, train_acc, test_loss, test_acc, test_f1
             ))
             if test_acc >= best_test_acc:
                 best_test_acc = test_acc
@@ -726,16 +739,6 @@ class Instructor():
                 patience = 0
                 if best_test_acc > all_best_acc:
                     all_best_acc = best_test_acc
-                    # save models
-                    if not os.path.exists(f'./model_weights/datasets_polarity'):
-                        os.mkdir(f'./model_weights/datasets_polarity')
-                    if not os.path.exists(f'./model_weights/datasets_polarity/{self.opt.dataset}'):
-                        os.mkdir(f'./model_weights/datasets_polarity/{self.opt.dataset}')
-                    torch.save(self.model.state_dict(), f'./model_weights/datasets_polarity/{self.opt.dataset}/'
-                                                        f'{self.opt.percentage}_{self.opt.saliency_mode}_'
-                                                        f'{self.opt.gamma}_{self.opt.alpha1}_{self.opt.alpha2}_'
-                                                        f'{self.opt.contrast_mode}_{self.opt.model_type}_'
-                                                        f'{self.opt.class_use_bert_embedding}.pth')
                     print("model weights saved!")
             else:
                 patience += 1
@@ -745,144 +748,24 @@ class Instructor():
         print('#' * 50)
         print(f"best test acc: {best_test_acc:.4f}, best test f1: {best_test_f1:.4f}, "
               f"best test precision: {best_test_precision:.4f}, best test recall: {best_test_recall:.4f}")
-        return all_best_acc, best_test_acc, best_test_f1, best_test_precision, best_test_recall
+        return
 
 
 def _main(opt):
-    today_str = datetime.strftime(datetime.today(), '%Y_%m_%d_%H_%M_%S')
-    out_dir = opt.out_dir
-    num_epochs = opt.num_epochs
-    percentages = opt.percentages
-    batch_sizes = opt.batch_sizes
-    run_times = opt.run_times
-
-    # for gridsearch
-    list_word_dim = []
-    list_batch_size = []
-    list_num_epoch = []
-    list_warm_up_epoch = []
-    list_lr = []
-    list_l2reg = []
-    list_fc_dropout = []
-    list_eps = []
-    list_seed = []
-    list_run_times = []
-    list_percentage = []
-
-    list_mean_acc = []
-    list_std_acc = []
-    list_max_acc = []
-    list_mean_f1 = []
-    list_std_f1 = []
-    list_max_f1 = []
-
-    list_sentence_mode  = []
-    list_saliency_mode = []
-    list_gamma = []
-    list_alpha1 = []
-    list_alpha2 = []
-    list_contrast_mode = []
-    list_temperature = []
-    list_model_type = []
-    list_class_use_bert_embedding = []
-    list_optimizer = []
-
-    for batch_size, num_epoch, percentage in zip(batch_sizes, num_epochs, percentages):
-        opt.batch_size = batch_size
-        opt.percentage = percentage
-        opt.num_epoch = num_epoch
-
-        list_cur_best_acc = []
-        list_cur_best_f1 = []
-        list_cur_best_precision = []
-        list_cur_best_recall = []
-        list_cur_seed = []
-        all_best_acc = 0
-        for _ in range(run_times):
-            ''' seed '''
-            cur_seed = opt.seed if opt.seed else random.randint(0, 2 ** 32 - 1)
-            random.seed(cur_seed)
-            np.random.seed(cur_seed)
-            torch.manual_seed(cur_seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(cur_seed)
-
-            ''' run the model '''
-            ins = Instructor(opt)
-            all_best_acc, best_test_acc, best_test_f1, best_test_precision, best_test_recall = ins._run(all_best_acc)
-            list_cur_best_acc.append(best_test_acc)
-            list_cur_best_f1.append(best_test_f1)
-            list_cur_seed.append(cur_seed)
-            list_cur_best_precision.append(best_test_precision)
-            list_cur_best_recall.append(best_test_recall)
-
-        mean_acc, max_acc, std_acc = np.mean(list_cur_best_acc), np.max(list_cur_best_acc), np.std(list_cur_best_acc)
-        mean_f1, max_f1, std_f1 = np.mean(list_cur_best_f1), np.max(list_cur_best_f1), np.std(list_cur_best_f1)
-        std_acc, std_f1 = np.std(list_cur_best_acc), np.std(list_cur_best_f1)
-        best_seed = list_cur_seed[np.argmax(np.array(list_cur_best_acc))]
-
-        list_mean_acc.append(mean_acc)
-        list_std_acc.append(std_acc)
-        list_max_acc.append(max_acc)
-        list_mean_f1.append(mean_f1)
-        list_std_f1.append(std_f1)
-        list_max_f1.append(max_f1)
-
-        list_word_dim.append(opt.word_dim)
-        list_batch_size.append(opt.batch_size)
-        list_num_epoch.append(opt.num_epoch)
-        list_warm_up_epoch.append(opt.warm_up_epoch)
-        list_lr.append(opt.lr)
-        list_l2reg.append(opt.l2reg)
-        list_fc_dropout.append(opt.fc_dropout)
-        list_eps.append(opt.eps)
-        list_seed.append(best_seed)
-        list_run_times.append(run_times)
-        list_percentage.append(opt.percentage)
-
-        list_sentence_mode.append(opt.sentence_mode)
-        list_saliency_mode.append(opt.saliency_mode)
-        list_gamma.append(opt.gamma)
-        list_alpha1.append(opt.alpha1)
-        list_alpha2.append(opt.alpha2)
-        list_contrast_mode.append(opt.contrast_mode)
-        list_temperature.append(opt.temperature)
-        list_model_type.append(opt.model_type)
-        list_class_use_bert_embedding.append(opt.class_use_bert_embedding)
-        list_optimizer.append(opt.optimizer_name)
-
-    list_vide = [None for _ in range(len(list_word_dim))]
-    results = pd.DataFrame([list_word_dim, list_batch_size, list_num_epoch, list_warm_up_epoch,
-                            list_lr, list_l2reg, list_fc_dropout, list_eps,
-                            list_seed, list_run_times, list_percentage, list_vide,
-                            list_mean_acc, list_std_acc, list_max_acc, list_mean_f1, list_std_f1, list_max_f1,
-                            list_sentence_mode, list_saliency_mode, list_gamma,
-                            list_alpha1, list_alpha2, list_contrast_mode, list_temperature,
-                            list_model_type, list_class_use_bert_embedding, list_optimizer],
-                           index=['word dim', 'batch size', 'num epoch', 'warm up epoch',
-                                  'lr', 'l2reg', 'fc dropout', 'eps',
-                                  'seed', 'run times', 'percentage', ' ',
-                                  'mean acc', 'std acc', 'max acc', 'mean f1', 'std f1', 'max f1',
-                                  'sentence mode', 'saliency mode', 'gamma',
-                                  'alpha1', 'alpha2', 'contrast mode', 'temperature',
-                                  'model_type', 'class use bert embedding', 'optimizer'])
-    results = results.T
-    if not os.path.exists(out_dir):
-        os.mkdir(out_dir)
-    if not os.path.exists(os.path.join(out_dir, opt.dataset)):
-        os.mkdir(os.path.join(out_dir, opt.dataset))
-    results.to_excel(os.path.join(out_dir, os.path.join(opt.dataset, f"{opt.model_type}_{opt.percentage}_{today_str}.xlsx")))
+    ins = Instructor(opt)
+    ins._run()
+    return
 
 
 if __name__ == "__main__":
     ''' hyperparameters '''
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', default='TREC', type=str, help='Restaurants, Laptops, SST2, CR'
+    parser.add_argument('--dataset', default='SST2', type=str, help='Restaurants, Laptops, SST2, CR'
                                                                     'TREC, IMDB, snli_1.0, yahoo, agnews')
     parser.add_argument('--directory', default='./datasets_manual', type=str)
-    parser.add_argument('--batch_sizes', default=[16], nargs='+', type=int)
-    parser.add_argument('--percentages', default=[20], nargs='+', type=float)
-    parser.add_argument('--num_epochs', default=[100], nargs='+', type=int)
+    parser.add_argument('--batch_size', default=64, type=int)
+    parser.add_argument('--percentage', default=50, type=float)
+    parser.add_argument('--num_epoch', default=100, type=int)
     parser.add_argument('--warm_up_epoch', default=0, type=int)
     parser.add_argument('--lr', default=1e-5, type=float)
     parser.add_argument('--l2reg', default=0.01, type=float)
@@ -905,28 +788,9 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer_name', default="adamw", type=str, help='adam, adamw')
 
     opt = parser.parse_args()
-    assert (len(opt.num_epochs) == len(opt.percentages) == len(opt.batch_sizes))
     assert (opt.word_dim == 768)
     if opt.saliency_mode == "attention":
         assert (opt.sentence_mode == "mean")
-
-    # 需要先设置CUDA_VISIBLE_DEVICES，然后import torch
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(opt.cuda_device)
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import DataLoader
-    from prefetch_generator import BackgroundGenerator
-    from nltk.corpus import wordnet
-    from transformers import GPT2LMHeadModel, GPT2Tokenizer
-    import corenlp
-    from torchnlp.encoders import LabelEncoder
-    sys.path.append("../")
-    from transformers import BertTokenizer, BertForMaskedLM, BertConfig, RobertaTokenizer
-    from model import AttBERTForPolarity, ROBERTAForPolarity
-    from data_utils import MyDataset
-    from loss_func import CrossEntropy
-    import torch.nn.functional as F
 
     # # anomaly detection
     # torch.autograd.set_detect_anomaly(True)
