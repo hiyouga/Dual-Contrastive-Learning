@@ -52,11 +52,6 @@ def load_data(dataset='SST2',
         'procon',
         'SUBJ',
         'TREC',
-        'Restaurants',
-        'Restaurants16',
-        'Laptops',
-        'Tweets',
-        "IMDB"
     ]
     if dataset not in datasets:
         raise ValueError('dataset: {} not in support list!'.format(dataset))
