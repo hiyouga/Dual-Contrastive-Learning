@@ -106,7 +106,6 @@ def collate_fn(batch, label_length, label_start, label_end, LABEL_CLASS):
 
 
 class Instructor():
-    ''' Model training and evaluation。使用torchnlp进行预处理，使用torch进行Dataset和Loader '''
     def __init__(self, opt):  # prepare for training the model
         train_data, test_data = self.load_data(opt.dataset, directory=opt.directory, percentage=opt.percentage)
         self._initialization(opt, train_data, test_data)
@@ -128,16 +127,6 @@ class Instructor():
             'procon',
             'SUBJ',
             'TREC',
-            'Restaurants',
-            'Restaurants16',
-            'Laptops',
-            'Tweets',
-            'IMDB',
-            'agnews',
-            'yahoo',
-            'CR',
-            'SUBJ',
-            'procon'
         ]
         if dataset not in datasets:
             raise ValueError('dataset: {} not in support list!'.format(dataset))
@@ -190,8 +179,8 @@ class Instructor():
         senti_label_encoder = LabelEncoder(senti_label_corpus, reserved_labels=[], unknown_index=None)
         opt.label_class = len(senti_label_encoder.vocab)
 
-        # our model，这个模型是为了其bert属性的训练参数，作为lm model的初始参数
-        opt.gumbel_softmax = False  # 设置为False，以读取之前使用gumbel_softmax=False的AttBERT模型参数
+        # our model
+        opt.gumbel_softmax = False
         if opt.model_type == "bert":
             model = AttBERTForPolarity(opt).to(opt.device)
             tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
@@ -201,7 +190,6 @@ class Instructor():
         else:
             raise ValueError("wrong model type!")
 
-        ''' 给train_data加上condition '''
         max_length = 0
         label_token2idx = senti_label_encoder.token_to_index
         list_labels = list(label_token2idx.keys())
