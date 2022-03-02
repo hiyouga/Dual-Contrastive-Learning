@@ -63,24 +63,24 @@ def preprocess_pos_ratio(dataset, load_directory='datasets',
                         if dataset == "procon":
                             for ind, special_token in enumerate(special_tokens_procon):
                                 sent = re.sub(special_token, " " + to_tokens_procon[ind] + " ", sent)
-                            sent = " ".join(sent.split())  # 多个空格符号缩写为1个
+                            sent = " ".join(sent.split())
 
                             ann = client.annotate(sent)
                             pos = []
                             sent_new = []
-                            for ann_sent in ann.sentence:  # sentence会以.符号隔开，表示多个句子
+                            for ann_sent in ann.sentence: 
                                 for token in ann_sent.token:
                                     pos.append(token.pos)
                                     sent_new.append(token.word)
                         elif dataset == "IMDB":
                             for ind, special_token in enumerate(special_tokens_IMDB):
                                 sent = re.sub(special_token, " " + to_tokens_IMDB[ind] + " ", sent)
-                            sent = " ".join(sent.split())  # 多个空格符号缩写为1个
+                            sent = " ".join(sent.split())
 
                             ann = client.annotate(sent)
                             pos = []
                             sent_new = []
-                            for ann_sent in ann.sentence:  # sentence会以.符号隔开，表示多个句子
+                            for ann_sent in ann.sentence:
                                 for token in ann_sent.token:
                                     pos.append(token.pos)
                                     sent_new.append(token.word)
@@ -97,7 +97,6 @@ def preprocess_pos_ratio(dataset, load_directory='datasets',
                                              f"length {len(a_data['sentence'].split())}, "
                                              f"pos {len(pos)}, gate {len(a_data['gate'])}")
 
-                        # 原地修改
                         a_data["sentence"] = sent_new
                         if pos:
                             a_data["pos"] = pos
@@ -144,8 +143,7 @@ def preprocess_alsc(dataset, load_directory='datasets_raw', save_directory='data
                     polarity = a_data['polarity']
                     if has_keywords and mode == 'Train':
                         keywords = a_data['keywords']
-
-                    # 初始化
+                        
                     if not cur_sentence:
                         cur_sentence = sentence
                         cur_polarities.add(polarity)
@@ -220,16 +218,10 @@ def repath_imdb(path, save_dir="datasets"):
 
 
 manual_datasets = [
-    'SST2',
-    'Restaurants',
-    'Laptops',
+    'SST2'
 ]
 other_datasets = [
-    'IMDB',
-    'snli_1.0',
     'TREC',
-    'agnews',
-    'yahoo',
     'CR',
     'SUBJ',
     'procon'
@@ -298,7 +290,6 @@ def preprocess_data_new(dataset='SST2',
                         sent = a_data["sentence"]
                         if dataset not in ("snli_1.0", "agnews", "yahoo"):
                             sent = sent.lower()
-                        # 需要让corenlp和bert tokenizer的分词进行对齐，如这里bert tokenizer可以将...分成. . .
                         sub_sent_list = bert_tokenizer.tokenize(sent)
                         sent_list = reformulate_sub_sent_list(sub_sent_list)
                         sent = " ".join(sent_list)
@@ -373,15 +364,14 @@ def preprocess_snli_data(dataset,
                     for idx, j in enumerate(tmp):
                         j = json.loads(j)
                         sentence1, sentence2, label = j["sentence1"], j["sentence2"], j["gold_label"]
-                        # 小写，去掉句末的标点
                         sentence1, sentence2 = sentence1.lower().strip(PUNC_LIST), sentence2.lower().strip(PUNC_LIST)
                         # sent = ["[CLS]"] + sentence1.split(" ") + ["[SEP]"] + sentence2.split(" ") + ["[SEP]"]
                         sent = sentence1.split(" ") + ["[SEP]"] + sentence2.split(" ")
                         sent = " ".join(sent)
-                        sent = re.sub(r"[\']+", "", sent)  # 对'操作
-                        sent = re.sub(r"[-]+", " ", sent)  # 对-操作
-                        sent = re.sub(r"!+", "!", sent)  # 对!操作
-                        sent = re.sub(r"\.+", ".", sent)  # 对!操作
+                        sent = re.sub(r"[\']+", "", sent)
+                        sent = re.sub(r"[-]+", " ", sent)
+                        sent = re.sub(r"!+", "!", sent)
+                        sent = re.sub(r"\.+", ".", sent)
                         sent_list = sent.split(" ")
                         sent_list = [token for token in sent_list if token not in PUNC_LIST]
                         sent = " ".join(sent_list)
@@ -411,10 +401,10 @@ if __name__ == "__main__":
     #                      load_directory="./datasets_raw/snli_1.0",
     #                      save_directory="./datasets_manual/")
 
-    dataset = "procon"
-    load_directory = "./datasets_manual"
-    save_directory = "./datasets_processed"
-    port = 5555
-    train = True
-    test = True
-    preprocess_data_new(dataset, load_directory, save_directory, port, train, test)
+#     dataset = "procon"
+#     load_directory = "./datasets_manual"
+#     save_directory = "./datasets_processed"
+#     port = 5555
+#     train = True
+#     test = True
+#     preprocess_data_new(dataset, load_directory, save_directory, port, train, test)
