@@ -401,7 +401,6 @@ class Instructor():
                     if self.opt.sentence_mode == "cls":
                         pass
                     elif self.opt.sentence_mode == "mean":
-                        # mean pooling over sentence embeddings
                         word_feature = (word_feature * attention_mask.unsqueeze(-1))[:, SENTENCE_BEGIN:, :]
                         text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
                         cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
