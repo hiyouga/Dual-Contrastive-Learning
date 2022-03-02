@@ -334,7 +334,7 @@ class Instructor():
         VOCAB_SIZE = self.tokenizer.vocab_size
 
         n_train, n_train_loss, n_ce_loss, n_mlm_loss, n_correct = 0, 0, 0, 0, 0
-        list_n_con_loss = [0] * len(self.opt.contrast_mode)
+        list_n_con_loss = [0, 0]
         t = time.time()
 
         self.model.train()  # switch model to training mode
@@ -501,23 +501,12 @@ class Instructor():
     def _contrast_loss(self, cls_feature, label_feature, labels):
         normed_cls_feature = F.normalize(cls_feature, dim=-1)
         normed_label_feature = F.normalize(label_feature, dim=-1)
-        list_con_loss = []
         BS, LABEL_CLASS, HS = normed_label_feature.shape
         normed_positive_label_feature = torch.gather(normed_label_feature, dim=1,
                                                      index=labels.reshape(-1, 1, 1).expand(-1, 1, HS)).squeeze(1)  # (bs, 768)
-        if "1" in self.opt.contrast_mode:
-            loss1 = self._calculate_contrast_loss(normed_positive_label_feature, normed_cls_feature, labels)
-            list_con_loss.append(loss1)
-        if "2" in self.opt.contrast_mode:
-            loss2 = self._calculate_contrast_loss(normed_cls_feature, normed_positive_label_feature, labels)
-            list_con_loss.append(loss2)
-        if "3" in self.opt.contrast_mode:
-            loss3 = self._calculate_contrast_loss(normed_positive_label_feature, normed_positive_label_feature, labels)
-            list_con_loss.append(loss3)
-        if "4" in self.opt.contrast_mode:
-            loss4 = self._calculate_contrast_loss(normed_cls_feature, normed_cls_feature, labels)
-            list_con_loss.append(loss4)
-        return list_con_loss
+        loss1 = self._calculate_contrast_loss(normed_positive_label_feature, normed_cls_feature, labels)
+        loss2 = self._calculate_contrast_loss(normed_cls_feature, normed_positive_label_feature, labels)
+        return [loss1, loss2]
 
     def _calculate_contrast_loss(self, anchor, target, labels, mu=1.0):
         BS = len(labels)
@@ -682,7 +671,6 @@ if __name__ == "__main__":
     parser.add_argument('--sentence_mode', default="cls", type=str, help='mean, cls')
     parser.add_argument('--alpha1', default=0.01, type=float)  # mlm loss
     parser.add_argument('--alpha2', default=0.01, type=float)  # contrast loss
-    parser.add_argument('--contrast_mode', default="12", type=str, help='1234')
     parser.add_argument('--temperature', default=0.1, type=float)
     parser.add_argument('--model_type', default="roberta", type=str, help='bert, roberta')
     parser.add_argument('--class_use_bert_embedding', default=1, type=int, help='fake bool')
