@@ -403,7 +403,7 @@ class Instructor():
                         text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
                         cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                     else:
-                        raise ValueError("sentence mode should either be cls or mean!")
+                        raise ValueError("sentence mode should be either cls or mean!")
                     # contrast loss
                     if self.opt.alpha2 > 1e-32 and len(torch.unique(labels)) > 1:
                         list_con_loss = self._contrast_loss(cls_feature, label_feature, labels)
@@ -456,7 +456,7 @@ class Instructor():
                         text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
                         cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                     else:
-                        raise ValueError("sentence mode should either be cls or mean!")
+                        raise ValueError("sentence mode should be either cls or mean!")
                     # ce loss
                     predicts = torch.bmm(label_feature, self.model.fc_dropout(cls_feature.unsqueeze(-1))).squeeze(-1)
                     ce_loss = criterion([predicts, None, None], labels)  # compute batch loss
@@ -574,7 +574,7 @@ class Instructor():
                     text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
                     cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                 else:
-                    raise ValueError("sentence mode should either be cls or mean!")
+                    raise ValueError("sentence mode should be either cls or mean!")
                 predicts = torch.bmm(label_feature, self.model.fc_dropout(cls_feature.unsqueeze(-1))).squeeze(-1)
                 ce_loss = criterion([predicts, None, None], labels)  # compute batch loss
 
