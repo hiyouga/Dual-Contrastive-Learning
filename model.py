@@ -91,7 +91,7 @@ class AttBERTForPolarity(nn.Module):
         self.fc_dropout = nn.Dropout(opt.fc_dropout)
         ''' bert lm model '''
         self.bert_lm_model = BertForMaskedLM.from_pretrained('bert-base-uncased').to(opt.device)
-        self.bert_lm_model.bert = bert  # 共享地址
+        self.bert_lm_model.bert = bert
         ''' label feature '''
         self.label_trans = nn.Linear(WD, WD)
         self.label_activation = nn.Tanh()
@@ -130,7 +130,7 @@ class ROBERTAForPolarity(nn.Module):
         self.fc_dropout = nn.Dropout(opt.fc_dropout)
         ''' bert lm model '''
         self.roberta_lm_model = RobertaForMaskedLM.from_pretrained('roberta-base').to(opt.device)
-        self.roberta_lm_model.roberta = roberta  # 共享地址
+        self.roberta_lm_model.roberta = roberta
         ''' label feature '''
         self.label_trans = nn.Linear(WD, WD)
         self.label_activation = nn.Tanh()

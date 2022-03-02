@@ -14,6 +14,23 @@ from datetime import datetime
 from sklearn import metrics
 import pandas as pd
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from prefetch_generator import BackgroundGenerator
+from nltk.corpus import wordnet
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+import corenlp
+from torchnlp.encoders import LabelEncoder
+
+sys.path.append("../")
+from transformers import BertTokenizer, BertForMaskedLM, BertConfig, RobertaTokenizer
+from model import AttBERTForPolarity, ROBERTAForPolarity
+from data_utils import MyDataset
+from loss_func import CrossEntropy
+import torch.nn.functional as F
+
 MAX_LENGTH = 512
 # trans_dict = {"[positive]": "[negative]", "[negative]": "[positive]",
 #               "[entailment]": "[contradiction]", "[contradiction]": "[entailment]",
@@ -28,16 +45,6 @@ trans_label = {
         "1": "positive",
         "0": "negative"
     },
-    "Restaurants": {
-        "positive": "positive",
-        "negative": "negative",
-        "neutral": "neutral"
-    },
-    "Laptops": {
-        "positive": "positive",
-        "negative": "negative",
-        "neutral": "neutral"
-    },
     "TREC": {
         "0": "description abstract concepts",
         "1": "entity",
@@ -46,12 +53,6 @@ trans_label = {
         "4": "location",
         "5": "numeric"
     },
-    "agnews": {
-        "0": "world",
-        "1": "sport",
-        "2": "business",
-        "3": "science and tech"
-    },
     "SUBJ": {
         "0": "subjective",
         "1": "objective"
@@ -59,19 +60,7 @@ trans_label = {
     "procon": {
         "positive": "positive",
         "negative": "negative"
-    },
-    "yahoo": {
-        "0": "society culture",
-        "1": "science mathematics",
-        "2": "health",
-        "3": "education reference",
-        "4": "computer internet",
-        "5": "sport",
-        "6": "business finance",
-        "7": "entertainment music",
-        "8": "family relationship",
-        "9": "politic government"
-    },
+    }
 }
 
 
@@ -106,7 +95,7 @@ def collate_fn(batch, label_length, label_start, label_end, LABEL_CLASS):
 
 
 class Instructor():
-    ''' Model training and evaluation。使用torchnlp进行预处理，使用torch进行Dataset和Loader '''
+    ''' Model training and evaluation '''
     def __init__(self, opt):  # prepare for training the model
         train_data, test_data = self.load_data(opt.dataset, directory=opt.directory, percentage=opt.percentage)
         self._initialization(opt, train_data, test_data)
@@ -128,16 +117,6 @@ class Instructor():
             'procon',
             'SUBJ',
             'TREC',
-            'Restaurants',
-            'Restaurants16',
-            'Laptops',
-            'Tweets',
-            'IMDB',
-            'agnews',
-            'yahoo',
-            'CR',
-            'SUBJ',
-            'procon'
         ]
         if dataset not in datasets:
             raise ValueError('dataset: {} not in support list!'.format(dataset))
@@ -181,7 +160,6 @@ class Instructor():
         if len(ret) == 1:
             return ret[0]
         else:
-            print("{} train data, {} test data".format(len(ret[0]), len(ret[1])))
             return tuple(ret)
 
     def _initialization(self, opt, train_data, test_data):
@@ -190,18 +168,15 @@ class Instructor():
         senti_label_encoder = LabelEncoder(senti_label_corpus, reserved_labels=[], unknown_index=None)
         opt.label_class = len(senti_label_encoder.vocab)
 
-        # our model，这个模型是为了其bert属性的训练参数，作为lm model的初始参数
-        opt.gumbel_softmax = False  # 设置为False，以读取之前使用gumbel_softmax=False的AttBERT模型参数
-        if opt.model_type == "bert":
+        if opt.model_type.lower() == "bert":
             model = AttBERTForPolarity(opt).to(opt.device)
             tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        elif opt.model_type == "roberta":
+        elif opt.model_type.lower() == "roberta":
             model = ROBERTAForPolarity(opt).to(opt.device)
             tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
         else:
-            raise ValueError("wrong model type!")
+            raise ValueError("model type should be either bert or roberta")
 
-        ''' 给train_data加上condition '''
         max_length = 0
         label_token2idx = senti_label_encoder.token_to_index
         list_labels = list(label_token2idx.keys())
@@ -318,7 +293,7 @@ class Instructor():
             label_length = [label_length[0]] + [l1 - l0 for l1, l0 in zip(label_length[1:], label_length[:-1])]
         return label_length
 
-    def _print_args(self):  # pring arguments
+    def _print_args(self):
         n_trainable_params, n_nontrainable_params = 0, 0
         for p in self.model.parameters():
             n_params = torch.prod(torch.tensor(p.shape))
@@ -333,7 +308,7 @@ class Instructor():
         for arg in vars(self.opt):
             print(f">>> {arg}: {getattr(self.opt, arg)}")
 
-    def _reset_params(self):  # reset model parameters
+    def _reset_params(self):
         for name, param in self.model.named_parameters():
             if param.requires_grad and self.opt.model_type not in name:
                 if 'embedding' in name:  # treat embedding matrices as special cases
@@ -357,7 +332,7 @@ class Instructor():
         VOCAB_SIZE = self.tokenizer.vocab_size
 
         n_train, n_train_loss, n_ce_loss, n_mlm_loss, n_correct = 0, 0, 0, 0, 0
-        list_n_con_loss = [0] * len(self.opt.contrast_mode)
+        list_n_con_loss = [0, 0]
         t = time.time()
 
         self.model.train()  # switch model to training mode
@@ -381,7 +356,7 @@ class Instructor():
                     label_words_mask = (label_mask + words_mask).type(torch.bool)
 
                     general_mask = torch.rand(inputs_id.shape).to(self.opt.device)
-                    general_mask = general_mask < 0.2  # 单词被抽中mask的概率
+                    general_mask = general_mask < 0.2
 
                     rand_for_mask = torch.rand(inputs_id.shape).to(self.opt.device)
                     mask_pos = rand_for_mask < 0.8
@@ -397,7 +372,7 @@ class Instructor():
             inputs_id[mask_pos] = MASK_ID
             if warm_up:
                 keywords_labels = torch.where(mask_pos==False,
-                                              -100*torch.ones_like(mask_pos), keywords_labels)  # 只计算某些位置的loss
+                                              -100*torch.ones_like(mask_pos), keywords_labels) 
                 del mask_pos
                 optimizer.zero_grad()  # clear gradient accumulators
                 with torch.cuda.amp.autocast():
@@ -411,42 +386,24 @@ class Instructor():
                     outputs = self.model([inputs_id_ori, attention_mask])  # compute outputs
                     word_feature, cls_feature = outputs.last_hidden_state, outputs.pooler_output
                     BS, SL, HS = word_feature.shape
-                    # 对word feature重新排序
+                    # word feature
                     word_feature = torch.gather(word_feature, dim=1, index=inputs_id_order.unsqueeze(-1).expand(-1, -1, HS))
-                    # 重组label feature
+                    # label feature
                     label_feature = word_feature[:, 1: SENTENCE_BEGIN-1, :]
                     label_feature = self._join_label_feature(label_feature, self.label_length, LABEL_CLASS)  # (bs, label_class, 768)
                     label_feature = self.model.label_dropout(
                         self.model.label_activation(self.model.label_trans(label_feature)))
-                    # 重组cls feature
+                    # cls feature
                     cls_feature = self.model.cls_dropout(
                         self.model.cls_activation(self.model.cls_trans(cls_feature)))
                     if self.opt.sentence_mode == "cls":
                         pass
                     elif self.opt.sentence_mode == "mean":
-                        # mean pooling over sentence embeddings
                         word_feature = (word_feature * attention_mask.unsqueeze(-1))[:, SENTENCE_BEGIN:, :]
                         text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
-                        if self.opt.saliency_mode == "baseline":
-                            cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
-                        elif self.opt.saliency_mode == "attention":
-                            # query = label_feature
-                            # key = value = word_feature
-                            attention_scores = torch.bmm(label_feature, word_feature.permute(0, 2, 1))
-                            attention_scores = attention_scores / math.sqrt(HS)  # (bs, class_label, sl)
-                            attention_mask_wo_head = attention_mask[:, SENTENCE_BEGIN:].unsqueeze(1).expand(-1,
-                                                                                                            LABEL_CLASS,
-                                                                                                            -1)
-                            attention_mask_wo_head = torch.where(attention_mask_wo_head == 1,
-                                                                 torch.zeros_like(attention_mask_wo_head),
-                                                                 -10000 * torch.ones_like(attention_mask_wo_head))
-                            attention_scores = attention_scores + attention_mask_wo_head
-                            attention_probs = nn.Softmax(dim=-1)(attention_scores)
-                            attention_probs = self.model.fc_dropout(attention_probs)
-                            label_feature = torch.bmm(attention_probs, word_feature)
-                            cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)
+                        cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                     else:
-                        raise ValueError("wrong sentence mode!")
+                        raise ValueError("sentence mode should be either cls or mean!")
                     # contrast loss
                     if self.opt.alpha2 > 1e-32 and len(torch.unique(labels)) > 1:
                         list_con_loss = self._contrast_loss(cls_feature, label_feature, labels)
@@ -482,42 +439,24 @@ class Instructor():
                     outputs = self.model([inputs_id_ori, attention_mask])  # compute outputs
                     word_feature, cls_feature = outputs.last_hidden_state, outputs.pooler_output
                     BS, SL, HS = word_feature.shape
-                    # 对word feature重新排序
+                    # word feature
                     word_feature = torch.gather(word_feature, dim=1, index=inputs_id_order.unsqueeze(-1).expand(-1, -1, HS))
-                    # 重组label feature
+                    # label feature
                     label_feature = word_feature[:, 1: SENTENCE_BEGIN-1, :]
                     label_feature = self._join_label_feature(label_feature, self.label_length, LABEL_CLASS)  # (bs, label_class, 768)
                     label_feature = self.model.label_dropout(
                         self.model.label_activation(self.model.label_trans(label_feature)))
-                    # 重组cls feature
+                    # cls feature
                     cls_feature = self.model.cls_dropout(
                         self.model.cls_activation(self.model.cls_trans(cls_feature)))
                     if self.opt.sentence_mode == "cls":
                         pass
                     elif self.opt.sentence_mode == "mean":
-                        # mean pooling over sentence embeddings
                         word_feature = (word_feature * attention_mask.unsqueeze(-1))[:, SENTENCE_BEGIN:, :]
                         text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
-                        if self.opt.saliency_mode == "baseline":
-                            cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
-                        elif self.opt.saliency_mode == "attention":
-                            # query = label_feature
-                            # key = value = word_feature
-                            attention_scores = torch.bmm(label_feature, word_feature.permute(0, 2, 1))
-                            attention_scores = attention_scores / math.sqrt(HS)  # (bs, class_label, sl)
-                            attention_mask_wo_head = attention_mask[:, SENTENCE_BEGIN:].unsqueeze(1).expand(-1,
-                                                                                                            LABEL_CLASS,
-                                                                                                            -1)
-                            attention_mask_wo_head = torch.where(attention_mask_wo_head==1,
-                                                                 torch.zeros_like(attention_mask_wo_head),
-                                                                 -10000 * torch.ones_like(attention_mask_wo_head))
-                            attention_scores = attention_scores + attention_mask_wo_head
-                            attention_probs = nn.Softmax(dim=-1)(attention_scores)
-                            attention_probs = self.model.fc_dropout(attention_probs)
-                            label_feature = torch.bmm(attention_probs, word_feature)
-                            cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)
+                        cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                     else:
-                        raise ValueError("wrong sentence mode!")
+                        raise ValueError("sentence mode should be either cls or mean!")
                     # ce loss
                     predicts = torch.bmm(label_feature, self.model.fc_dropout(cls_feature.unsqueeze(-1))).squeeze(-1)
                     ce_loss = criterion([predicts, None, None], labels)  # compute batch loss
@@ -557,34 +496,15 @@ class Instructor():
                 end += label_length[idx+1]
         return out
 
-    # def _calculate_contrast_loss(self, ori, syn, list):
-    #     # ori, syn, ant = torch.tanh(ori), torch.tanh(syn), torch.tanh(ant)
-    #     simi_syn = torch.exp(torch.sum(torch.mul(ori, syn), dim=1))  # (bs, )
-    #     simi_ant = torch.exp(torch.sum(torch.mul(ori, ant), dim=1))  # (bs, )
-    #     batch_loss = torch.log(torch.clamp((simi_syn + 1e-6) / (simi_syn + simi_ant + 1e-6), min=1e-6))  # (bs, )
-    #     loss = - torch.mean(batch_loss)
-    #     return loss
-
     def _contrast_loss(self, cls_feature, label_feature, labels):
         normed_cls_feature = F.normalize(cls_feature, dim=-1)
         normed_label_feature = F.normalize(label_feature, dim=-1)
-        list_con_loss = []
         BS, LABEL_CLASS, HS = normed_label_feature.shape
         normed_positive_label_feature = torch.gather(normed_label_feature, dim=1,
                                                      index=labels.reshape(-1, 1, 1).expand(-1, 1, HS)).squeeze(1)  # (bs, 768)
-        if "1" in self.opt.contrast_mode:
-            loss1 = self._calculate_contrast_loss(normed_positive_label_feature, normed_cls_feature, labels)
-            list_con_loss.append(loss1)
-        if "2" in self.opt.contrast_mode:
-            loss2 = self._calculate_contrast_loss(normed_cls_feature, normed_positive_label_feature, labels)
-            list_con_loss.append(loss2)
-        if "3" in self.opt.contrast_mode:
-            loss3 = self._calculate_contrast_loss(normed_positive_label_feature, normed_positive_label_feature, labels)
-            list_con_loss.append(loss3)
-        if "4" in self.opt.contrast_mode:
-            loss4 = self._calculate_contrast_loss(normed_cls_feature, normed_cls_feature, labels)
-            list_con_loss.append(loss4)
-        return list_con_loss
+        loss1 = self._calculate_contrast_loss(normed_positive_label_feature, normed_cls_feature, labels)
+        loss2 = self._calculate_contrast_loss(normed_cls_feature, normed_positive_label_feature, labels)
+        return [loss1, loss2]
 
     def _calculate_contrast_loss(self, anchor, target, labels, mu=1.0):
         BS = len(labels)
@@ -594,14 +514,14 @@ class Instructor():
             # compute temperature using mask
             temperature_matrix = torch.where(mask == True, mu * torch.ones_like(mask),
                                              1 / self.opt.temperature * torch.ones_like(mask)).to(self.opt.device)
-            # # mask-out self-contrast cases, 即自身对自身不考虑在内
-            # logits_mask = torch.scatter(
-            #     torch.ones_like(mask),
-            #     1,
-            #     torch.arange(BS).view(-1, 1).to(self.opt.device),
-            #     0
-            # )
-            # mask = mask * logits_mask
+#             # mask-out self-contrast cases
+#             logits_mask = torch.scatter(
+#                 torch.ones_like(mask),
+#                 1,
+#                 torch.arange(BS).view(-1, 1).to(self.opt.device),
+#                 0
+#             )
+#             mask = mask * logits_mask
         # compute logits
         anchor_dot_target = torch.multiply(torch.matmul(anchor, target.T), temperature_matrix)  # (bs, bs)
         # for numerical stability
@@ -609,7 +529,7 @@ class Instructor():
         logits = anchor_dot_target - logits_max.detach()  # (bs, bs)
         # compute log_prob
         exp_logits = torch.exp(logits)  # (bs, bs)
-        exp_logits = exp_logits - torch.diag_embed(torch.diag(exp_logits))  # 减去对角线元素，对自身不可以
+        exp_logits = exp_logits - torch.diag_embed(torch.diag(exp_logits))
         log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-12)  # (bs, bs)
         # in case that mask.sum(1) has no zero
         mask_sum = mask.sum(dim=1)
@@ -639,40 +559,22 @@ class Instructor():
                 outputs = self.model([inputs_id, attention_mask])  # compute outputs
                 word_feature, cls_feature = outputs.last_hidden_state, outputs.pooler_output
                 BS, SL, HS = word_feature.shape
-                # 重组label feature
+                # label feature
                 label_feature = word_feature[:, 1: SENTENCE_BEGIN-1, :]
                 label_feature = self._join_label_feature(label_feature, self.label_length, LABEL_CLASS)  # (bs, label_class, 768)
                 label_feature = self.model.label_dropout(
                     self.model.label_activation(self.model.label_trans(label_feature)))
-                # 重组cls feature
+                # cls feature
                 cls_feature = self.model.cls_dropout(
                     self.model.cls_activation(self.model.cls_trans(cls_feature)))
                 if self.opt.sentence_mode == "cls":
                     pass
                 elif self.opt.sentence_mode == "mean":
-                    # mean pooling over sentence embeddings
                     word_feature = (word_feature * attention_mask.unsqueeze(-1))[:, SENTENCE_BEGIN:, :]
                     text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
-                    if self.opt.saliency_mode == "baseline":
-                        cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
-                    elif self.opt.saliency_mode == "attention":
-                        # query = label_feature
-                        # key = value = word_feature
-                        attention_scores = torch.bmm(label_feature, word_feature.permute(0, 2, 1))
-                        attention_scores = attention_scores / math.sqrt(HS)  # (bs, class_label, sl)
-                        attention_mask_wo_head = attention_mask[:, SENTENCE_BEGIN:].unsqueeze(1).expand(-1,
-                                                                                                        LABEL_CLASS,
-                                                                                                        -1)
-                        attention_mask_wo_head = torch.where(attention_mask_wo_head == 1,
-                                                             torch.zeros_like(attention_mask_wo_head),
-                                                             -10000 * torch.ones_like(attention_mask_wo_head))
-                        attention_scores = attention_scores + attention_mask_wo_head
-                        attention_probs = nn.Softmax(dim=-1)(attention_scores)
-                        attention_probs = self.model.fc_dropout(attention_probs)
-                        label_feature = torch.bmm(attention_probs, word_feature)
-                        cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)
+                    cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                 else:
-                    raise ValueError("wrong sentence mode!")
+                    raise ValueError("sentence mode should be either cls or mean!")
                 predicts = torch.bmm(label_feature, self.model.fc_dropout(cls_feature.unsqueeze(-1))).squeeze(-1)
                 ce_loss = criterion([predicts, None, None], labels)  # compute batch loss
 
@@ -686,21 +588,10 @@ class Instructor():
         recall = metrics.recall_score(labels_all.detach().cpu(), torch.argmax(predicts_all, -1).detach().cpu(), average='macro')
         return test_loss / n_test, n_correct / n_test, macro_f1, precision, recall
 
-    def _run(self, all_best_acc):
-        bert_params = [p for name, p in self.model.named_parameters()
-                       if p.requires_grad and name.startswith(self.opt.model_type)]
-        bert_params_id = [id(p) for name, p in self.model.named_parameters()
-                       if p.requires_grad and name.startswith(self.opt.model_type)]
-        other_params = filter(lambda p: p.requires_grad and id(p) not in bert_params_id,
-                              self.model.parameters())
-        _params = [
-            {"params": bert_params, "lr": self.opt.lr},
-            {"params": other_params, "lr": self.opt.lr * 10},
-        ]
-        if opt.optimizer_name.lower() == "adam":
-            optimizer = torch.optim.Adam(_params, lr=self.opt.lr, weight_decay=self.opt.l2reg)
-        elif opt.optimizer_name.lower() == "adamw":
-            optimizer = torch.optim.AdamW(_params, lr=self.opt.lr, weight_decay=self.opt.l2reg)
+    def _run(self):
+        all_best_acc = 0
+        _params = [p for name, p in self.model.named_parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(_params, lr=self.opt.lr, weight_decay=self.opt.l2reg)
         criterion = CrossEntropy(self.opt)  # loss function implemented as described in paper
 
         self._reset_params()  # reset model parameters
@@ -726,9 +617,9 @@ class Instructor():
             train_loss, ce_loss, mlm_loss, list_con_loss, train_acc, used_time = self._train(optimizer, criterion, scaler, warm_up)
             test_loss, test_acc, test_f1, precision, recall = self._test(criterion, scaler)
             list_con_loss = [round(loss, 4) for loss in list_con_loss]
-            print("Epoch: {} | train_loss: {:.4f} | ce_loss: {:.4f} | mlm_loss: {:.4f} contrast_loss: {} | train_time: {:.4f} | lr: {:.8f}\n"
+            print("Epoch: {} | train_loss: {:.4f} | train_time: {:.4f} | lr: {:.8f}"
                   "\ttrain_acc: {:.4f} | test_loss: {:.4f} | test_acc: {:.4f} | test_f1: {:.4f}".format(
-                epoch, train_loss, ce_loss, mlm_loss, list_con_loss, used_time, cur_lr, train_acc, test_loss, test_acc, test_f1
+                epoch, train_loss, used_time, cur_lr, train_acc, test_loss, test_acc, test_f1
             ))
             if test_acc >= best_test_acc:
                 best_test_acc = test_acc
@@ -738,16 +629,6 @@ class Instructor():
                 patience = 0
                 if best_test_acc > all_best_acc:
                     all_best_acc = best_test_acc
-                    # save models
-                    if not os.path.exists(f'./model_weights/datasets_polarity'):
-                        os.mkdir(f'./model_weights/datasets_polarity')
-                    if not os.path.exists(f'./model_weights/datasets_polarity/{self.opt.dataset}'):
-                        os.mkdir(f'./model_weights/datasets_polarity/{self.opt.dataset}')
-                    torch.save(self.model.state_dict(), f'./model_weights/datasets_polarity/{self.opt.dataset}/'
-                                                        f'{self.opt.percentage}_{self.opt.saliency_mode}_'
-                                                        f'{self.opt.gamma}_{self.opt.alpha1}_{self.opt.alpha2}_'
-                                                        f'{self.opt.contrast_mode}_{self.opt.model_type}_'
-                                                        f'{self.opt.class_use_bert_embedding}.pth')
                     print("model weights saved!")
             else:
                 patience += 1
@@ -757,144 +638,24 @@ class Instructor():
         print('#' * 50)
         print(f"best test acc: {best_test_acc:.4f}, best test f1: {best_test_f1:.4f}, "
               f"best test precision: {best_test_precision:.4f}, best test recall: {best_test_recall:.4f}")
-        return all_best_acc, best_test_acc, best_test_f1, best_test_precision, best_test_recall
+        return
 
 
 def _main(opt):
-    today_str = datetime.strftime(datetime.today(), '%Y_%m_%d_%H_%M_%S')
-    out_dir = opt.out_dir
-    num_epochs = opt.num_epochs
-    percentages = opt.percentages
-    batch_sizes = opt.batch_sizes
-    run_times = opt.run_times
-
-    # for gridsearch
-    list_word_dim = []
-    list_batch_size = []
-    list_num_epoch = []
-    list_warm_up_epoch = []
-    list_lr = []
-    list_l2reg = []
-    list_fc_dropout = []
-    list_eps = []
-    list_seed = []
-    list_run_times = []
-    list_percentage = []
-
-    list_mean_acc = []
-    list_std_acc = []
-    list_max_acc = []
-    list_mean_f1 = []
-    list_std_f1 = []
-    list_max_f1 = []
-
-    list_sentence_mode  = []
-    list_saliency_mode = []
-    list_gamma = []
-    list_alpha1 = []
-    list_alpha2 = []
-    list_contrast_mode = []
-    list_temperature = []
-    list_model_type = []
-    list_class_use_bert_embedding = []
-    list_optimizer = []
-
-    for batch_size, num_epoch, percentage in zip(batch_sizes, num_epochs, percentages):
-        opt.batch_size = batch_size
-        opt.percentage = percentage
-        opt.num_epoch = num_epoch
-
-        list_cur_best_acc = []
-        list_cur_best_f1 = []
-        list_cur_best_precision = []
-        list_cur_best_recall = []
-        list_cur_seed = []
-        all_best_acc = 0
-        for _ in range(run_times):
-            ''' seed '''
-            cur_seed = opt.seed if opt.seed else random.randint(0, 2 ** 32 - 1)
-            random.seed(cur_seed)
-            np.random.seed(cur_seed)
-            torch.manual_seed(cur_seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(cur_seed)
-
-            ''' run the model '''
-            ins = Instructor(opt)
-            all_best_acc, best_test_acc, best_test_f1, best_test_precision, best_test_recall = ins._run(all_best_acc)
-            list_cur_best_acc.append(best_test_acc)
-            list_cur_best_f1.append(best_test_f1)
-            list_cur_seed.append(cur_seed)
-            list_cur_best_precision.append(best_test_precision)
-            list_cur_best_recall.append(best_test_recall)
-
-        mean_acc, max_acc, std_acc = np.mean(list_cur_best_acc), np.max(list_cur_best_acc), np.std(list_cur_best_acc)
-        mean_f1, max_f1, std_f1 = np.mean(list_cur_best_f1), np.max(list_cur_best_f1), np.std(list_cur_best_f1)
-        std_acc, std_f1 = np.std(list_cur_best_acc), np.std(list_cur_best_f1)
-        best_seed = list_cur_seed[np.argmax(np.array(list_cur_best_acc))]
-
-        list_mean_acc.append(mean_acc)
-        list_std_acc.append(std_acc)
-        list_max_acc.append(max_acc)
-        list_mean_f1.append(mean_f1)
-        list_std_f1.append(std_f1)
-        list_max_f1.append(max_f1)
-
-        list_word_dim.append(opt.word_dim)
-        list_batch_size.append(opt.batch_size)
-        list_num_epoch.append(opt.num_epoch)
-        list_warm_up_epoch.append(opt.warm_up_epoch)
-        list_lr.append(opt.lr)
-        list_l2reg.append(opt.l2reg)
-        list_fc_dropout.append(opt.fc_dropout)
-        list_eps.append(opt.eps)
-        list_seed.append(best_seed)
-        list_run_times.append(run_times)
-        list_percentage.append(opt.percentage)
-
-        list_sentence_mode.append(opt.sentence_mode)
-        list_saliency_mode.append(opt.saliency_mode)
-        list_gamma.append(opt.gamma)
-        list_alpha1.append(opt.alpha1)
-        list_alpha2.append(opt.alpha2)
-        list_contrast_mode.append(opt.contrast_mode)
-        list_temperature.append(opt.temperature)
-        list_model_type.append(opt.model_type)
-        list_class_use_bert_embedding.append(opt.class_use_bert_embedding)
-        list_optimizer.append(opt.optimizer_name)
-
-    list_vide = [None for _ in range(len(list_word_dim))]
-    results = pd.DataFrame([list_word_dim, list_batch_size, list_num_epoch, list_warm_up_epoch,
-                            list_lr, list_l2reg, list_fc_dropout, list_eps,
-                            list_seed, list_run_times, list_percentage, list_vide,
-                            list_mean_acc, list_std_acc, list_max_acc, list_mean_f1, list_std_f1, list_max_f1,
-                            list_sentence_mode, list_saliency_mode, list_gamma,
-                            list_alpha1, list_alpha2, list_contrast_mode, list_temperature,
-                            list_model_type, list_class_use_bert_embedding, list_optimizer],
-                           index=['word dim', 'batch size', 'num epoch', 'warm up epoch',
-                                  'lr', 'l2reg', 'fc dropout', 'eps',
-                                  'seed', 'run times', 'percentage', ' ',
-                                  'mean acc', 'std acc', 'max acc', 'mean f1', 'std f1', 'max f1',
-                                  'sentence mode', 'saliency mode', 'gamma',
-                                  'alpha1', 'alpha2', 'contrast mode', 'temperature',
-                                  'model_type', 'class use bert embedding', 'optimizer'])
-    results = results.T
-    if not os.path.exists(out_dir):
-        os.mkdir(out_dir)
-    if not os.path.exists(os.path.join(out_dir, opt.dataset)):
-        os.mkdir(os.path.join(out_dir, opt.dataset))
-    results.to_excel(os.path.join(out_dir, os.path.join(opt.dataset, f"{opt.model_type}_{opt.percentage}_{today_str}.xlsx")))
+    ins = Instructor(opt)
+    ins._run()
+    return
 
 
 if __name__ == "__main__":
     ''' hyperparameters '''
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', default='TREC', type=str, help='Restaurants, Laptops, SST2, CR'
+    parser.add_argument('--dataset', default='SST2', type=str, help='Restaurants, Laptops, SST2, CR'
                                                                     'TREC, IMDB, snli_1.0, yahoo, agnews')
     parser.add_argument('--directory', default='./datasets_manual', type=str)
-    parser.add_argument('--batch_sizes', default=[16], nargs='+', type=int)
-    parser.add_argument('--percentages', default=[20], nargs='+', type=float)
-    parser.add_argument('--num_epochs', default=[100], nargs='+', type=int)
+    parser.add_argument('--batch_size', default=64, type=int)
+    parser.add_argument('--percentage', default=0.1, type=float)
+    parser.add_argument('--num_epoch', default=100, type=int)
     parser.add_argument('--warm_up_epoch', default=0, type=int)
     parser.add_argument('--lr', default=1e-5, type=float)
     parser.add_argument('--l2reg', default=0.01, type=float)
@@ -906,39 +667,14 @@ if __name__ == "__main__":
     parser.add_argument('--cuda_device', default=0, type=int, help='0, 1, 2, 3')
 
     parser.add_argument('--sentence_mode', default="cls", type=str, help='mean, cls')
-    parser.add_argument('--saliency_mode', default="baseline", type=str, help='baseline, drop_input, mean, cls')
-    parser.add_argument('--gamma', default=0, type=float)
     parser.add_argument('--alpha1', default=0.01, type=float)  # mlm loss
     parser.add_argument('--alpha2', default=0.01, type=float)  # contrast loss
-    parser.add_argument('--contrast_mode', default="12", type=str, help='1234')
     parser.add_argument('--temperature', default=0.1, type=float)
     parser.add_argument('--model_type', default="roberta", type=str, help='bert, roberta')
     parser.add_argument('--class_use_bert_embedding', default=1, type=int, help='fake bool')
-    parser.add_argument('--optimizer_name', default="adamw", type=str, help='adam, adamw')
 
     opt = parser.parse_args()
-    assert (len(opt.num_epochs) == len(opt.percentages) == len(opt.batch_sizes))
     assert (opt.word_dim == 768)
-    if opt.saliency_mode == "attention":
-        assert (opt.sentence_mode == "mean")
-
-    # 需要先设置CUDA_VISIBLE_DEVICES，然后import torch
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(opt.cuda_device)
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import DataLoader
-    from prefetch_generator import BackgroundGenerator
-    from nltk.corpus import wordnet
-    from transformers import GPT2LMHeadModel, GPT2Tokenizer
-    import corenlp
-    from torchnlp.encoders import LabelEncoder
-    sys.path.append("../")
-    from transformers import BertTokenizer, BertForMaskedLM, BertConfig, RobertaTokenizer
-    from model import AttBERTForPolarity, ROBERTAForPolarity
-    from data_utils import MyDataset
-    from loss_func import CrossEntropy
-    import torch.nn.functional as F
 
     # # anomaly detection
     # torch.autograd.set_detect_anomaly(True)
@@ -950,8 +686,8 @@ if __name__ == "__main__":
     opt.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if opt.device == "cuda":
         ''' if you are using cudnn '''
-        torch.backends.cudnn.deterministic = True  # Deterministic mode can have a performance impact，，避免计算中的随机性
-        torch.backends.cudnn.benchmark = False  # 若设置成True，将会让程序在开始时花费一点额外时间，为整个网络的每个卷积层搜索最适合它的卷积实现算法，进而实现网络的加速。适用场景是网络结构固定（不是动态变化的），网络的输入形状（包括 batch size，图片大小，输入的通道）是不变的，其实也就是一般情况下都比较适用。反之，如果卷积层的设置一直变化，将会导致程序不停地做优化，反而会耗费更多的时间。但是RNN是动态的，seq_len会变，因此要设置成False
+        torch.backends.cudnn.deterministic = True  # Deterministic mode can have a performance impact
+        torch.backends.cudnn.benchmark = False 
 
     if not os.path.exists("results_polarity"):
         os.mkdir("results_polarity")
