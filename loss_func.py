@@ -25,9 +25,9 @@ class CrossEntropy(nn.Module):
         predicts = self.logsoftmax(predicts)
         with torch.no_grad():
             true_dist = torch.zeros_like(predicts)
-            true_dist.fill_(self.smoothing / (self.classes - 1))  # tensor全部fill某个值
+            true_dist.fill_(self.smoothing / (self.classes - 1))
             if if_mixup:
-                true_dist = labels  # labels变成true_dist的转换需要在函数外进行
+                true_dist = labels
             else:
                 true_dist.scatter_(1, labels.data.unsqueeze(1), self.confidence)  # ().scatter_(dim, index, src)
 
@@ -38,12 +38,12 @@ class CrossEntropy(nn.Module):
             if self.opt.loss_mode == "baseline":
                 pass
             elif self.opt.loss_mode == "la":
-                loss_all += self.gamma * self.mse_loss(torch.sum(keep_prob, dim=1).squeeze(-1), keep_num)  # 注意力分配
+                loss_all += self.gamma * self.mse_loss(torch.sum(keep_prob, dim=1).squeeze(-1), keep_num)
             elif self.opt.loss_mode == "l1":
-                loss_all += self.gamma * torch.mean((torch.sum(torch.abs(keep_prob.squeeze(-1)), dim=1) / text_len))  # 注意力L1 loss
+                loss_all += self.gamma * torch.mean((torch.sum(torch.abs(keep_prob.squeeze(-1)), dim=1) / text_len))
             elif self.opt.loss_mode == "lal1":
-                loss_all += self.gamma * self.mse_loss(torch.sum(keep_prob, dim=1).squeeze(-1), keep_num)  # 注意力分配
-                loss_all += self.gamma * torch.mean((torch.sum(torch.abs(keep_prob.squeeze(-1)), dim=1) / text_len))  # 注意力L1 loss
+                loss_all += self.gamma * self.mse_loss(torch.sum(keep_prob, dim=1).squeeze(-1), keep_num)
+                loss_all += self.gamma * torch.mean((torch.sum(torch.abs(keep_prob.squeeze(-1)), dim=1) / text_len))
             else:
                 raise ValueError
         return loss_all
