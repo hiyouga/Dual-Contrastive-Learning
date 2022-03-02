@@ -168,8 +168,6 @@ class Instructor():
         senti_label_encoder = LabelEncoder(senti_label_corpus, reserved_labels=[], unknown_index=None)
         opt.label_class = len(senti_label_encoder.vocab)
 
-        # our model
-        opt.gumbel_softmax = False 
         if opt.model_type.lower() == "bert":
             model = AttBERTForPolarity(opt).to(opt.device)
             tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
