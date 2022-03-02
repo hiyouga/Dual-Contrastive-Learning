@@ -404,26 +404,9 @@ class Instructor():
                         # mean pooling over sentence embeddings
                         word_feature = (word_feature * attention_mask.unsqueeze(-1))[:, SENTENCE_BEGIN:, :]
                         text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
-                        if self.opt.saliency_mode == "baseline":
-                            cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
-                        elif self.opt.saliency_mode == "attention":
-                            # query = label_feature
-                            # key = value = word_feature
-                            attention_scores = torch.bmm(label_feature, word_feature.permute(0, 2, 1))
-                            attention_scores = attention_scores / math.sqrt(HS)  # (bs, class_label, sl)
-                            attention_mask_wo_head = attention_mask[:, SENTENCE_BEGIN:].unsqueeze(1).expand(-1,
-                                                                                                            LABEL_CLASS,
-                                                                                                            -1)
-                            attention_mask_wo_head = torch.where(attention_mask_wo_head == 1,
-                                                                 torch.zeros_like(attention_mask_wo_head),
-                                                                 -10000 * torch.ones_like(attention_mask_wo_head))
-                            attention_scores = attention_scores + attention_mask_wo_head
-                            attention_probs = nn.Softmax(dim=-1)(attention_scores)
-                            attention_probs = self.model.fc_dropout(attention_probs)
-                            label_feature = torch.bmm(attention_probs, word_feature)
-                            cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)
+                        cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                     else:
-                        raise ValueError("wrong sentence mode!")
+                        raise ValueError("sentence mode should either be cls or mean!")
                     # contrast loss
                     if self.opt.alpha2 > 1e-32 and len(torch.unique(labels)) > 1:
                         list_con_loss = self._contrast_loss(cls_feature, label_feature, labels)
@@ -472,29 +455,11 @@ class Instructor():
                     if self.opt.sentence_mode == "cls":
                         pass
                     elif self.opt.sentence_mode == "mean":
-                        # mean pooling over sentence embeddings
                         word_feature = (word_feature * attention_mask.unsqueeze(-1))[:, SENTENCE_BEGIN:, :]
                         text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
-                        if self.opt.saliency_mode == "baseline":
-                            cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
-                        elif self.opt.saliency_mode == "attention":
-                            # query = label_feature
-                            # key = value = word_feature
-                            attention_scores = torch.bmm(label_feature, word_feature.permute(0, 2, 1))
-                            attention_scores = attention_scores / math.sqrt(HS)  # (bs, class_label, sl)
-                            attention_mask_wo_head = attention_mask[:, SENTENCE_BEGIN:].unsqueeze(1).expand(-1,
-                                                                                                            LABEL_CLASS,
-                                                                                                            -1)
-                            attention_mask_wo_head = torch.where(attention_mask_wo_head==1,
-                                                                 torch.zeros_like(attention_mask_wo_head),
-                                                                 -10000 * torch.ones_like(attention_mask_wo_head))
-                            attention_scores = attention_scores + attention_mask_wo_head
-                            attention_probs = nn.Softmax(dim=-1)(attention_scores)
-                            attention_probs = self.model.fc_dropout(attention_probs)
-                            label_feature = torch.bmm(attention_probs, word_feature)
-                            cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)
+                        cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                     else:
-                        raise ValueError("wrong sentence mode!")
+                        raise ValueError("sentence mode should either be cls or mean!")
                     # ce loss
                     predicts = torch.bmm(label_feature, self.model.fc_dropout(cls_feature.unsqueeze(-1))).squeeze(-1)
                     ce_loss = criterion([predicts, None, None], labels)  # compute batch loss
@@ -619,29 +584,11 @@ class Instructor():
                 if self.opt.sentence_mode == "cls":
                     pass
                 elif self.opt.sentence_mode == "mean":
-                    # mean pooling over sentence embeddings
                     word_feature = (word_feature * attention_mask.unsqueeze(-1))[:, SENTENCE_BEGIN:, :]
                     text_len_wo_head = torch.sum(attention_mask, dim=1, keepdim=True) - SENTENCE_BEGIN  # (bs, )
-                    if self.opt.saliency_mode == "baseline":
-                        cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
-                    elif self.opt.saliency_mode == "attention":
-                        # query = label_feature
-                        # key = value = word_feature
-                        attention_scores = torch.bmm(label_feature, word_feature.permute(0, 2, 1))
-                        attention_scores = attention_scores / math.sqrt(HS)  # (bs, class_label, sl)
-                        attention_mask_wo_head = attention_mask[:, SENTENCE_BEGIN:].unsqueeze(1).expand(-1,
-                                                                                                        LABEL_CLASS,
-                                                                                                        -1)
-                        attention_mask_wo_head = torch.where(attention_mask_wo_head == 1,
-                                                             torch.zeros_like(attention_mask_wo_head),
-                                                             -10000 * torch.ones_like(attention_mask_wo_head))
-                        attention_scores = attention_scores + attention_mask_wo_head
-                        attention_probs = nn.Softmax(dim=-1)(attention_scores)
-                        attention_probs = self.model.fc_dropout(attention_probs)
-                        label_feature = torch.bmm(attention_probs, word_feature)
-                        cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)
+                    cls_feature = torch.div(torch.sum((word_feature), dim=1), text_len_wo_head)  # (bs, 768)
                 else:
-                    raise ValueError("wrong sentence mode!")
+                    raise ValueError("sentence mode should either be cls or mean!")
                 predicts = torch.bmm(label_feature, self.model.fc_dropout(cls_feature.unsqueeze(-1))).squeeze(-1)
                 ce_loss = criterion([predicts, None, None], labels)  # compute batch loss
 
@@ -721,7 +668,7 @@ if __name__ == "__main__":
                                                                     'TREC, IMDB, snli_1.0, yahoo, agnews')
     parser.add_argument('--directory', default='./datasets_manual', type=str)
     parser.add_argument('--batch_size', default=64, type=int)
-    parser.add_argument('--percentage', default=50, type=float)
+    parser.add_argument('--percentage', default=0.1, type=float)
     parser.add_argument('--num_epoch', default=100, type=int)
     parser.add_argument('--warm_up_epoch', default=0, type=int)
     parser.add_argument('--lr', default=1e-5, type=float)
@@ -734,7 +681,6 @@ if __name__ == "__main__":
     parser.add_argument('--cuda_device', default=0, type=int, help='0, 1, 2, 3')
 
     parser.add_argument('--sentence_mode', default="cls", type=str, help='mean, cls')
-    parser.add_argument('--saliency_mode', default="baseline", type=str, help='baseline, drop_input, mean, cls')
     parser.add_argument('--alpha1', default=0.01, type=float)  # mlm loss
     parser.add_argument('--alpha2', default=0.01, type=float)  # contrast loss
     parser.add_argument('--contrast_mode', default="12", type=str, help='1234')
@@ -744,8 +690,6 @@ if __name__ == "__main__":
 
     opt = parser.parse_args()
     assert (opt.word_dim == 768)
-    if opt.saliency_mode == "attention":
-        assert (opt.sentence_mode == "mean")
 
     # # anomaly detection
     # torch.autograd.set_detect_anomaly(True)
