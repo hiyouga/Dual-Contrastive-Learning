@@ -45,16 +45,6 @@ trans_label = {
         "1": "positive",
         "0": "negative"
     },
-    "Restaurants": {
-        "positive": "positive",
-        "negative": "negative",
-        "neutral": "neutral"
-    },
-    "Laptops": {
-        "positive": "positive",
-        "negative": "negative",
-        "neutral": "neutral"
-    },
     "TREC": {
         "0": "description abstract concepts",
         "1": "entity",
@@ -63,12 +53,6 @@ trans_label = {
         "4": "location",
         "5": "numeric"
     },
-    "agnews": {
-        "0": "world",
-        "1": "sport",
-        "2": "business",
-        "3": "science and tech"
-    },
     "SUBJ": {
         "0": "subjective",
         "1": "objective"
@@ -76,19 +60,7 @@ trans_label = {
     "procon": {
         "positive": "positive",
         "negative": "negative"
-    },
-    "yahoo": {
-        "0": "society culture",
-        "1": "science mathematics",
-        "2": "health",
-        "3": "education reference",
-        "4": "computer internet",
-        "5": "sport",
-        "6": "business finance",
-        "7": "entertainment music",
-        "8": "family relationship",
-        "9": "politic government"
-    },
+    }
 }
 
 
@@ -123,7 +95,7 @@ def collate_fn(batch, label_length, label_start, label_end, LABEL_CLASS):
 
 
 class Instructor():
-    ''' Model training and evaluation。使用torchnlp进行预处理，使用torch进行Dataset和Loader '''
+    ''' Model training and evaluation '''
     def __init__(self, opt):  # prepare for training the model
         train_data, test_data = self.load_data(opt.dataset, directory=opt.directory, percentage=opt.percentage)
         self._initialization(opt, train_data, test_data)
@@ -145,16 +117,6 @@ class Instructor():
             'procon',
             'SUBJ',
             'TREC',
-            'Restaurants',
-            'Restaurants16',
-            'Laptops',
-            'Tweets',
-            'IMDB',
-            'agnews',
-            'yahoo',
-            'CR',
-            'SUBJ',
-            'procon'
         ]
         if dataset not in datasets:
             raise ValueError('dataset: {} not in support list!'.format(dataset))
@@ -198,7 +160,6 @@ class Instructor():
         if len(ret) == 1:
             return ret[0]
         else:
-            print("{} train data, {} test data".format(len(ret[0]), len(ret[1])))
             return tuple(ret)
 
     def _initialization(self, opt, train_data, test_data):
@@ -207,18 +168,17 @@ class Instructor():
         senti_label_encoder = LabelEncoder(senti_label_corpus, reserved_labels=[], unknown_index=None)
         opt.label_class = len(senti_label_encoder.vocab)
 
-        # our model，这个模型是为了其bert属性的训练参数，作为lm model的初始参数
-        opt.gumbel_softmax = False  # 设置为False，以读取之前使用gumbel_softmax=False的AttBERT模型参数
-        if opt.model_type == "bert":
+        # our model
+        opt.gumbel_softmax = False 
+        if opt.model_type.lower() == "bert":
             model = AttBERTForPolarity(opt).to(opt.device)
             tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        elif opt.model_type == "roberta":
+        elif opt.model_type.lower() == "roberta":
             model = ROBERTAForPolarity(opt).to(opt.device)
             tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
         else:
-            raise ValueError("wrong model type!")
+            raise ValueError("model type should be either bert or roberta")
 
-        ''' 给train_data加上condition '''
         max_length = 0
         label_token2idx = senti_label_encoder.token_to_index
         list_labels = list(label_token2idx.keys())
@@ -335,7 +295,7 @@ class Instructor():
             label_length = [label_length[0]] + [l1 - l0 for l1, l0 in zip(label_length[1:], label_length[:-1])]
         return label_length
 
-    def _print_args(self):  # pring arguments
+    def _print_args(self):
         n_trainable_params, n_nontrainable_params = 0, 0
         for p in self.model.parameters():
             n_params = torch.prod(torch.tensor(p.shape))
@@ -350,7 +310,7 @@ class Instructor():
         for arg in vars(self.opt):
             print(f">>> {arg}: {getattr(self.opt, arg)}")
 
-    def _reset_params(self):  # reset model parameters
+    def _reset_params(self):
         for name, param in self.model.named_parameters():
             if param.requires_grad and self.opt.model_type not in name:
                 if 'embedding' in name:  # treat embedding matrices as special cases
@@ -398,7 +358,7 @@ class Instructor():
                     label_words_mask = (label_mask + words_mask).type(torch.bool)
 
                     general_mask = torch.rand(inputs_id.shape).to(self.opt.device)
-                    general_mask = general_mask < 0.2  # 单词被抽中mask的概率
+                    general_mask = general_mask < 0.2
 
                     rand_for_mask = torch.rand(inputs_id.shape).to(self.opt.device)
                     mask_pos = rand_for_mask < 0.8
@@ -414,7 +374,7 @@ class Instructor():
             inputs_id[mask_pos] = MASK_ID
             if warm_up:
                 keywords_labels = torch.where(mask_pos==False,
-                                              -100*torch.ones_like(mask_pos), keywords_labels)  # 只计算某些位置的loss
+                                              -100*torch.ones_like(mask_pos), keywords_labels) 
                 del mask_pos
                 optimizer.zero_grad()  # clear gradient accumulators
                 with torch.cuda.amp.autocast():
@@ -428,14 +388,14 @@ class Instructor():
                     outputs = self.model([inputs_id_ori, attention_mask])  # compute outputs
                     word_feature, cls_feature = outputs.last_hidden_state, outputs.pooler_output
                     BS, SL, HS = word_feature.shape
-                    # 对word feature重新排序
+                    # word feature
                     word_feature = torch.gather(word_feature, dim=1, index=inputs_id_order.unsqueeze(-1).expand(-1, -1, HS))
-                    # 重组label feature
+                    # label feature
                     label_feature = word_feature[:, 1: SENTENCE_BEGIN-1, :]
                     label_feature = self._join_label_feature(label_feature, self.label_length, LABEL_CLASS)  # (bs, label_class, 768)
                     label_feature = self.model.label_dropout(
                         self.model.label_activation(self.model.label_trans(label_feature)))
-                    # 重组cls feature
+                    # cls feature
                     cls_feature = self.model.cls_dropout(
                         self.model.cls_activation(self.model.cls_trans(cls_feature)))
                     if self.opt.sentence_mode == "cls":
@@ -499,14 +459,14 @@ class Instructor():
                     outputs = self.model([inputs_id_ori, attention_mask])  # compute outputs
                     word_feature, cls_feature = outputs.last_hidden_state, outputs.pooler_output
                     BS, SL, HS = word_feature.shape
-                    # 对word feature重新排序
+                    # word feature
                     word_feature = torch.gather(word_feature, dim=1, index=inputs_id_order.unsqueeze(-1).expand(-1, -1, HS))
-                    # 重组label feature
+                    # label feature
                     label_feature = word_feature[:, 1: SENTENCE_BEGIN-1, :]
                     label_feature = self._join_label_feature(label_feature, self.label_length, LABEL_CLASS)  # (bs, label_class, 768)
                     label_feature = self.model.label_dropout(
                         self.model.label_activation(self.model.label_trans(label_feature)))
-                    # 重组cls feature
+                    # cls feature
                     cls_feature = self.model.cls_dropout(
                         self.model.cls_activation(self.model.cls_trans(cls_feature)))
                     if self.opt.sentence_mode == "cls":
@@ -603,14 +563,14 @@ class Instructor():
             # compute temperature using mask
             temperature_matrix = torch.where(mask == True, mu * torch.ones_like(mask),
                                              1 / self.opt.temperature * torch.ones_like(mask)).to(self.opt.device)
-            # # mask-out self-contrast cases, 即自身对自身不考虑在内
-            # logits_mask = torch.scatter(
-            #     torch.ones_like(mask),
-            #     1,
-            #     torch.arange(BS).view(-1, 1).to(self.opt.device),
-            #     0
-            # )
-            # mask = mask * logits_mask
+#             # mask-out self-contrast cases
+#             logits_mask = torch.scatter(
+#                 torch.ones_like(mask),
+#                 1,
+#                 torch.arange(BS).view(-1, 1).to(self.opt.device),
+#                 0
+#             )
+#             mask = mask * logits_mask
         # compute logits
         anchor_dot_target = torch.multiply(torch.matmul(anchor, target.T), temperature_matrix)  # (bs, bs)
         # for numerical stability
@@ -618,7 +578,7 @@ class Instructor():
         logits = anchor_dot_target - logits_max.detach()  # (bs, bs)
         # compute log_prob
         exp_logits = torch.exp(logits)  # (bs, bs)
-        exp_logits = exp_logits - torch.diag_embed(torch.diag(exp_logits))  # 减去对角线元素，对自身不可以
+        exp_logits = exp_logits - torch.diag_embed(torch.diag(exp_logits))
         log_prob = logits - torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-12)  # (bs, bs)
         # in case that mask.sum(1) has no zero
         mask_sum = mask.sum(dim=1)
@@ -648,12 +608,12 @@ class Instructor():
                 outputs = self.model([inputs_id, attention_mask])  # compute outputs
                 word_feature, cls_feature = outputs.last_hidden_state, outputs.pooler_output
                 BS, SL, HS = word_feature.shape
-                # 重组label feature
+                # label feature
                 label_feature = word_feature[:, 1: SENTENCE_BEGIN-1, :]
                 label_feature = self._join_label_feature(label_feature, self.label_length, LABEL_CLASS)  # (bs, label_class, 768)
                 label_feature = self.model.label_dropout(
                     self.model.label_activation(self.model.label_trans(label_feature)))
-                # 重组cls feature
+                # cls feature
                 cls_feature = self.model.cls_dropout(
                     self.model.cls_activation(self.model.cls_trans(cls_feature)))
                 if self.opt.sentence_mode == "cls":
@@ -698,10 +658,7 @@ class Instructor():
     def _run(self):
         all_best_acc = 0
         _params = [p for name, p in self.model.named_parameters() if p.requires_grad]
-        if opt.optimizer_name.lower() == "adam":
-            optimizer = torch.optim.Adam(_params, lr=self.opt.lr, weight_decay=self.opt.l2reg)
-        elif opt.optimizer_name.lower() == "adamw":
-            optimizer = torch.optim.AdamW(_params, lr=self.opt.lr, weight_decay=self.opt.l2reg)
+        optimizer = torch.optim.AdamW(_params, lr=self.opt.lr, weight_decay=self.opt.l2reg)
         criterion = CrossEntropy(self.opt)  # loss function implemented as described in paper
 
         self._reset_params()  # reset model parameters
@@ -778,14 +735,12 @@ if __name__ == "__main__":
 
     parser.add_argument('--sentence_mode', default="cls", type=str, help='mean, cls')
     parser.add_argument('--saliency_mode', default="baseline", type=str, help='baseline, drop_input, mean, cls')
-    parser.add_argument('--gamma', default=0, type=float)
     parser.add_argument('--alpha1', default=0.01, type=float)  # mlm loss
     parser.add_argument('--alpha2', default=0.01, type=float)  # contrast loss
     parser.add_argument('--contrast_mode', default="12", type=str, help='1234')
     parser.add_argument('--temperature', default=0.1, type=float)
     parser.add_argument('--model_type', default="roberta", type=str, help='bert, roberta')
     parser.add_argument('--class_use_bert_embedding', default=1, type=int, help='fake bool')
-    parser.add_argument('--optimizer_name', default="adamw", type=str, help='adam, adamw')
 
     opt = parser.parse_args()
     assert (opt.word_dim == 768)
@@ -802,8 +757,8 @@ if __name__ == "__main__":
     opt.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if opt.device == "cuda":
         ''' if you are using cudnn '''
-        torch.backends.cudnn.deterministic = True  # Deterministic mode can have a performance impact，，避免计算中的随机性
-        torch.backends.cudnn.benchmark = False  # 若设置成True，将会让程序在开始时花费一点额外时间，为整个网络的每个卷积层搜索最适合它的卷积实现算法，进而实现网络的加速。适用场景是网络结构固定（不是动态变化的），网络的输入形状（包括 batch size，图片大小，输入的通道）是不变的，其实也就是一般情况下都比较适用。反之，如果卷积层的设置一直变化，将会导致程序不停地做优化，反而会耗费更多的时间。但是RNN是动态的，seq_len会变，因此要设置成False
+        torch.backends.cudnn.deterministic = True  # Deterministic mode can have a performance impact
+        torch.backends.cudnn.benchmark = False 
 
     if not os.path.exists("results_polarity"):
         os.mkdir("results_polarity")
