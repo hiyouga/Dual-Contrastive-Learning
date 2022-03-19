@@ -664,7 +664,7 @@ if __name__ == "__main__":
     parser.add_argument('--cuda_device', default=0, type=int, help='0, 1, 2, 3')
 
     parser.add_argument('--sentence_mode', default="cls", type=str, help='mean, cls')
-    parser.add_argument('--alpha1', default=0.01, type=float)  # mlm loss
+    parser.add_argument('--alpha1', default=0.0, type=float)  # mlm loss
     parser.add_argument('--alpha2', default=0.01, type=float)  # contrast loss
     parser.add_argument('--temperature', default=0.1, type=float)
     parser.add_argument('--model_type', default="roberta", type=str, help='bert, roberta')
