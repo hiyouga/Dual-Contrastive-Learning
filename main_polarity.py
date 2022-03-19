@@ -511,19 +511,16 @@ class Instructor():
         with torch.no_grad():
             labels = labels.reshape(-1, 1)
             mask = torch.eq(labels, labels.T)  # (bs, bs)
-            # compute temperature using mask
-            temperature_matrix = torch.where(mask == True, mu * torch.ones_like(mask),
-                                             1 / self.opt.temperature * torch.ones_like(mask)).to(self.opt.device)
-#             # mask-out self-contrast cases
-#             logits_mask = torch.scatter(
-#                 torch.ones_like(mask),
-#                 1,
-#                 torch.arange(BS).view(-1, 1).to(self.opt.device),
-#                 0
-#             )
-#             mask = mask * logits_mask
+            # mask-out self-contrast cases
+            logits_mask = torch.scatter(
+                torch.ones_like(mask),
+                1,
+                torch.arange(BS).view(-1, 1).to(self.opt.device),
+                0
+            )
+            mask = mask * logits_mask
         # compute logits
-        anchor_dot_target = torch.multiply(torch.matmul(anchor, target.T), temperature_matrix)  # (bs, bs)
+        anchor_dot_target = torch.multiply(torch.matmul(anchor, target.T), 1 / self.opt.temperature)  # (bs, bs)
         # for numerical stability
         logits_max, _ = torch.max(anchor_dot_target, dim=1, keepdim=True)
         logits = anchor_dot_target - logits_max.detach()  # (bs, bs)
@@ -653,11 +650,11 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', default='SST2', type=str, help='Restaurants, Laptops, SST2, CR'
                                                                     'TREC, IMDB, snli_1.0, yahoo, agnews')
     parser.add_argument('--directory', default='./datasets_manual', type=str)
-    parser.add_argument('--batch_size', default=64, type=int)
+    parser.add_argument('--batch_size', default=16, type=int)
     parser.add_argument('--percentage', default=0.1, type=float)
     parser.add_argument('--num_epoch', default=100, type=int)
     parser.add_argument('--warm_up_epoch', default=0, type=int)
-    parser.add_argument('--lr', default=1e-5, type=float)
+    parser.add_argument('--lr', default=5e-6, type=float)
     parser.add_argument('--l2reg', default=0.01, type=float)
     parser.add_argument('--word_dim', default=768, type=int)
     parser.add_argument('--fc_dropout', default=0.1, type=float)
