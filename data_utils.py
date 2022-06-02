@@ -1,6 +1,7 @@
 import os
 import json
 import torch
+import random
 from functools import partial
 from torch.utils.data import Dataset, DataLoader
 
@@ -11,21 +12,22 @@ class MyDataset(Dataset):
         dataset = list()
         for data in raw_data:
             tokens = data['text'].lower().split(' ')
-            if model_name == 'bert':
-                cls_token, sep_token = ['[CLS]'], ['[SEP]']
-            elif model_name == 'roberta':
-                cls_token, sep_token = ['<s>'], ['</s>']
-            if method in ['ce', 'scl']:
-                tokens = cls_token + tokens + sep_token
-            else:
-                tokens = cls_token + list(label_dict.keys()) + sep_token + tokens + sep_token
             label_id = label_dict[data['label']]
             dataset.append((tokens, label_id))
         self._dataset = dataset
+        self._method = method
+        self.sep_token = ['[SEP]'] if model_name == 'bert' else ['</s>']
+        self._label_list = list(label_dict.keys())
         self._num_classes = len(label_dict)
 
     def __getitem__(self, index):
         tokens, label_id = self._dataset[index]
+        if self._method not in ['ce', 'scl']:
+            rand_idx = [i for i in range(self._num_classes)]
+            random.shuffle(rand_idx)
+            label_list = [self._label_list[i] for i in rand_idx]
+            tokens = label_list + self.sep_token + tokens
+            label_id = rand_idx[label_id]
         return tokens, label_id
 
     def __len__(self):
@@ -39,7 +41,7 @@ def my_collate(batch, tokenizer):
                          truncation=True,
                          max_length=256,
                          is_split_into_words=True,
-                         add_special_tokens=False,
+                         add_special_tokens=True,
                          return_tensors='pt')
     return text_ids, torch.tensor(label_ids)
 
