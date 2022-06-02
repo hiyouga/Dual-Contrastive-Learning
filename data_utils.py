@@ -1,232 +1,76 @@
 import os
-import re
 import json
-import pickle
-import string
-import numpy as np
-from collections import defaultdict
-
-from sklearn.feature_extraction.text import TfidfVectorizer
-from torch.utils.data import Dataset
+import torch
+from functools import partial
+from torch.utils.data import Dataset, DataLoader
 
 
 class MyDataset(Dataset):
-    def __init__(self, dataset):
+
+    def __init__(self, raw_data, label_dict, tokenizer, model_name, method):
+        dataset = list()
+        for data in raw_data:
+            tokens = data['text'].lower().split(' ')
+            if model_name == 'bert':
+                cls_token, sep_token = ['[CLS]'], ['[SEP]']
+            elif model_name == 'roberta':
+                cls_token, sep_token = ['<s>'], ['</s>']
+            if method in ['ce', 'scl']:
+                tokens = cls_token + tokens + sep_token
+            else:
+                tokens = cls_token + list(label_dict.keys()) + sep_token + tokens + sep_token
+            label_id = label_dict[data['label']]
+            dataset.append((tokens, label_id))
         self._dataset = dataset
+        self._num_classes = len(label_dict)
+
     def __getitem__(self, index):
-        return self._dataset[index]
+        tokens, label_id = self._dataset[index]
+        return tokens, label_id
+
     def __len__(self):
         return len(self._dataset)
 
 
-def load_data(dataset='SST2',
-              directory='datasets_processed',
-              train=True,
-              test=True,
-              train_file='Train.json',
-              test_file='Test.json',
-              load_pos=False,
-              augmented_mode=None,
-              percentage=1.0,
-              ):
-    """
-    Load the Restaurants14 dataset.
+def my_collate(batch, tokenizer):
+    tokens, label_ids = map(list, zip(*batch))
+    text_ids = tokenizer(tokens,
+                         padding=True,
+                         truncation=True,
+                         max_length=256,
+                         is_split_into_words=True,
+                         add_special_tokens=False,
+                         return_tensors='pt')
+    return text_ids, torch.tensor(label_ids)
 
-    Args:
-        dataset : xxx.
-        directory (str, optional): Directory to cache the dataset.
-        train (bool, optional): If to load the training split of the dataset.
-        test (bool, optional): If to load the test split of the dataset.
-        train_file (str, optional): xxx.
-        test_file (str, optional): xxx.
 
-    Returns:
-        :class:`tuple` of :class:`torchnlp.datasets.Dataset`
-        Returns between one and all dataset splits (train, dev and test) depending on if their
-        respective boolean argument is ``True``.
-
-    """
-    datasets = [
-        'SST2',
-        'CR',
-        'procon',
-        'SUBJ',
-        'TREC',
-    ]
-    if dataset not in datasets:
-        raise ValueError('dataset: {} not in support list!'.format(dataset))
-
-    if directory == 'datasets_processed':
-        assert (augmented_mode == None)
-    if directory in ('datasets_processed', 'datasets_augmented',
-                     'datasets_augmented_pure_eda', 'datasets_augmented_manual'):
-        directory = os.path.join(directory, dataset)
-
-    if augmented_mode and train_file:
-        train_file = augmented_mode + '_' + str(percentage) + '_' + train_file
+def load_data(dataset, data_dir, tokenizer, train_batch_size, test_batch_size, model_name, method, workers):
+    if dataset == 'sst2':
+        train_data = json.load(open(os.path.join(data_dir, 'SST2_Train.json'), 'r', encoding='utf-8'))
+        test_data = json.load(open(os.path.join(data_dir, 'SST2_Test.json'), 'r', encoding='utf-8'))
+        label_dict = {'positive': 0, 'negative': 1}
+    elif dataset == 'trec':
+        train_data = json.load(open(os.path.join(data_dir, 'TREC_Train.json'), 'r', encoding='utf-8'))
+        test_data = json.load(open(os.path.join(data_dir, 'TREC_Test.json'), 'r', encoding='utf-8'))
+        label_dict = {'description': 0, 'entity': 1, 'abbreviation': 2, 'human': 3, 'location': 4, 'numeric': 5}
+    elif dataset == 'cr':
+        train_data = json.load(open(os.path.join(data_dir, 'CR_Train.json'), 'r', encoding='utf-8'))
+        test_data = json.load(open(os.path.join(data_dir, 'CR_Test.json'), 'r', encoding='utf-8'))
+        label_dict = {'positive': 0, 'negative': 1}
+    elif dataset == 'subj':
+        train_data = json.load(open(os.path.join(data_dir, 'SUBJ_Train.json'), 'r', encoding='utf-8'))
+        test_data = json.load(open(os.path.join(data_dir, 'SUBJ_Test.json'), 'r', encoding='utf-8'))
+        label_dict = {'subjective': 0, 'objective': 1}
+    elif dataset == 'pc':
+        train_data = json.load(open(os.path.join(data_dir, 'procon_Train.json'), 'r', encoding='utf-8'))
+        test_data = json.load(open(os.path.join(data_dir, 'procon_Test.json'), 'r', encoding='utf-8'))
+        label_dict = {'positive': 0, 'negative': 1}
     else:
-        train_file = str(percentage) + '_' + train_file
-
-    ret = []
-    splits = [
-        '_'.join([dataset, fn_]) for (requested, fn_) in [(train, train_file), (test, test_file)]
-        if requested
-    ]
-    for split_file in splits:
-        full_filename = os.path.join(directory, split_file)
-        examples = []
-        with open(full_filename, 'r', encoding="utf-8") as f:
-            for j in f.readlines():
-                a_data = json.loads(j)
-                sent = a_data["sentence"].lower()
-                label = a_data["polarity"]
-                if load_pos:
-                    pos = a_data["pos"]
-                    examples.append([[sent, pos], label])
-                else:
-                    examples.append([sent, label])
-        ret.append(examples)
-    if len(ret) == 1:
-        return ret[0]
-    else:
-        return tuple(ret)
-
-
-def build_embedding_matrix(vocab, dataset, word_dim=300, directory='datasets_processed',
-                           augmented_mode=None, percentage=1.0):
-
-    if directory == 'datasets_processed':
-        assert (augmented_mode == None)
-
-    if augmented_mode:
-        dataset = dataset + augmented_mode + '_' + str(percentage)
-    else:
-        dataset = dataset + '_' + str(percentage)
-
-    if not os.path.exists(os.path.join('dats', directory)):
-        os.mkdir(os.path.join('dats', directory))
-    if not os.path.exists(os.path.join(os.path.join('dats', directory), dataset)):
-        os.mkdir(os.path.join(os.path.join('dats', directory), dataset))
-    parent_dir = os.path.join(os.path.join('dats', directory), dataset)
-
-    data_file = os.path.join(parent_dir, f"{dataset}_embedding_matrix.dat")  # embedding matrix cache
-    glove_file = os.path.join('glove', 'glove.840B.300d.txt') # pre-trained glove embedding file
-    if os.path.exists(data_file):
-        print(f"loading embedding matrix: {data_file}")
-        embedding_matrix = pickle.load(open(data_file, 'rb'))
-    else:
-        print('loading word vectors...')
-        embedding_matrix = np.random.uniform(-0.25, 0.25, (len(vocab), word_dim)).astype('float32') # sample from U(-0.25,0.25)
-        word_vec = _load_wordvec(glove_file, word_dim, vocab)
-        for i in range(len(vocab)):
-            vec = word_vec.get(vocab[i])
-            if vec is not None:
-                embedding_matrix[i] = vec
-        pickle.dump(embedding_matrix, open(data_file, 'wb'))
-    return embedding_matrix
-
-
-def _load_wordvec(data_path, word_dim, vocab=None):
-    with open(data_path, 'r', encoding='utf-8', newline='\n', errors='ignore') as f:
-        word_vec = dict()
-        word_vec['<pad>'] = np.zeros(word_dim).astype('float32')  # embedding vector for <pad> is always zero
-        for line in f:
-            tokens = line.rstrip().split()
-            if (len(tokens) - 1) != word_dim:
-                continue
-            if tokens[0] == '<pad>' or tokens[0] == '<unk>': # avoid them
-                continue
-            if vocab is None or tokens[0] in vocab:
-                word_vec[tokens[0]] = np.asarray(tokens[1:], dtype='float32')
-        return word_vec
-
-
-class PosClassEncoder():
-    def __init__(self, pos2class, class2pos):
-        '''
-        pos2class: {'NN':1, 'JJ':1...}
-        class2pos: {1:('NN', 'JJ')...}
-        '''
-        self.pos2class = pos2class
-        self.class2pos = class2pos
-        self.pos_class = len(pos2class.keys())
-
-    @classmethod
-    def from_path(cls, pos_path):
-        pos2class, class2pos = dict(), defaultdict(set)
-        with open(pos_path, "r") as fo:
-            for ind, line in enumerate(fo.readlines()):
-                if ind == 0:
-                    continue
-                line = line.split()
-                pos2class[line[1]] = int(line[-1])
-        pos2class['unknown'] = 1
-        for pos, cla in pos2class.items():
-            class2pos[cla].add(pos)
-        return cls(pos2class, class2pos)
-
-    def encode(self, list_pos):
-        list_class = []
-        for pos in list_pos:
-            if pos not in self.pos2class.keys():
-                list_class.append(self.pos2class['unknown'])
-            else:
-                list_class.append(self.pos2class[pos])
-        return list_class
-
-
-def _tfidf(dataset='SST2',
-              directory='datasets_processed',
-              train=True,
-              test=False,
-              train_file='Train.json',
-              test_file='None',
-              ):
-
-    datasets = [
-        'SST2',
-        'CR',
-        'procon',
-        'SUBJ',
-        'TREC'
-    ]
-    if directory == 'datasets_processed':
-        directory = os.path.join(directory, dataset)
-    if dataset not in datasets:
-        raise ValueError('dataset: {} not in support list!'.format(dataset))
-    splits = [
-        '_'.join([dataset, fn_]) for (requested, fn_) in [(train, train_file), (test, test_file)]
-        if requested
-    ]
-    for split_file in splits:
-        full_filename = os.path.join(directory, split_file)
-        all_sents = defaultdict(str)
-        labels_list = []
-        sents_list = []
-        with open(full_filename, 'r', encoding="utf-8") as f:
-            for j in f.readlines():
-                a_data = json.loads(j)
-                sent = a_data["sentence"].lower()
-                label = a_data["polarity"]
-                all_sents[label] += (sent + " ")
-        for label, sents in all_sents.items():
-            sents = " ".join(sents.split())
-            labels_list.append(label)
-            sents_list.append(sents)
-
-    tfidf_vec = TfidfVectorizer()
-    tfidf_matrix = tfidf_vec.fit_transform(sents_list)
-
-    # tfidf_vec.get_feature_names()
-    # tfidf_vec.vocabulary_
-    # tfidf_matrix.toarray()
-
-    with open(os.path.join(directory, f'{dataset}_vocabulary.json'), 'w') as fw1:
-        fw1.write(json.dumps(tfidf_vec.vocabulary_))
-    np.save(os.path.join(directory, f'{dataset}_matrix.npy'), tfidf_matrix.toarray())
-    print(f">>> {dataset} TF-IDF vocabulary and matrix saved! ")
-
-
-if __name__ == "__main__":
-    dataset = 'CR'
-    _tfidf(dataset)
+        raise ValueError('unknown dataset')
+    trainset = MyDataset(train_data, label_dict, tokenizer, model_name, method)
+    testset = MyDataset(test_data, label_dict, tokenizer, model_name, method)
+    train_dataloader = DataLoader(trainset, train_batch_size, shuffle=True, num_workers=workers,
+                                  collate_fn=partial(my_collate, tokenizer=tokenizer), pin_memory=True)
+    test_dataloader = DataLoader(testset, test_batch_size, shuffle=False, num_workers=workers,
+                                 collate_fn=partial(my_collate, tokenizer=tokenizer), pin_memory=True)
+    return train_dataloader, test_dataloader

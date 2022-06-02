@@ -24,10 +24,10 @@ Contrastive learning has achieved remarkable success in representation learning 
 
 ## Requirement
 
-- Python >= 3.7
-- torch = 1.7.0
-- numpy >= 1.17.2
-- transformers = 4.9.2
+- Python = 3.7
+- torch = 1.11.0
+- numpy = 1.17.2
+- transformers = 4.19.2
 
 ## Preparation
 
@@ -48,7 +48,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```sh
-python main_polarity.py
+python main.py --method dualcl
 ```
 
 ## Citation
