@@ -35,7 +35,7 @@ class Instructor:
     def _train(self, dataloader, criterion, optimizer):
         train_loss, n_correct, n_train = 0, 0, 0
         self.model.train()
-        for inputs, targets in tqdm(dataloader, disable=self.args.backend):
+        for inputs, targets in tqdm(dataloader, disable=self.args.backend, ascii=' >='):
             inputs = {k: v.to(self.args.device) for k, v in inputs.items()}
             targets = targets.to(self.args.device)
             outputs = self.model(**inputs)
@@ -52,7 +52,7 @@ class Instructor:
         test_loss, n_correct, n_test = 0, 0, 0
         self.model.eval()
         with torch.no_grad():
-            for inputs, targets in tqdm(dataloader, disable=self.args.backend):
+            for inputs, targets in tqdm(dataloader, disable=self.args.backend, ascii=' >='):
                 inputs = {k: v.to(self.args.device) for k, v in inputs.items()}
                 targets = targets.to(self.args.device)
                 outputs = self.model(**inputs)

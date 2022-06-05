@@ -49,9 +49,9 @@ class SupConLoss(nn.Module):
 
     def forward(self, outputs, targets):
         normed_cls_feats = F.normalize(outputs['cls_feats'], dim=-1)
-        loss = self.xent_loss(outputs['predicts'], targets)
-        loss += self.alpha * self.nt_xent_loss(normed_cls_feats, normed_cls_feats, targets)
-        return loss
+        ce_loss = (1 - self.alpha) * self.xent_loss(outputs['predicts'], targets)
+        cl_loss = self.alpha * self.nt_xent_loss(normed_cls_feats, normed_cls_feats, targets)
+        return ce_loss + cl_loss
 
 
 class DualLoss(SupConLoss):
@@ -63,7 +63,7 @@ class DualLoss(SupConLoss):
         normed_cls_feats = F.normalize(outputs['cls_feats'], dim=-1)
         normed_label_feats = F.normalize(outputs['label_feats'], dim=-1)
         normed_pos_label_feats = torch.gather(normed_label_feats, dim=1, index=targets.reshape(-1, 1, 1).expand(-1, 1, normed_label_feats.size(-1))).squeeze(1)
-        loss = self.xent_loss(outputs['predicts'], targets)
-        loss += self.alpha * self.nt_xent_loss(normed_pos_label_feats, normed_cls_feats, targets)
-        loss += self.alpha * self.nt_xent_loss(normed_cls_feats, normed_pos_label_feats, targets)
-        return loss
+        ce_loss = (1 - self.alpha) * self.xent_loss(outputs['predicts'], targets)
+        cl_loss_1 = 0.5 * self.alpha * self.nt_xent_loss(normed_pos_label_feats, normed_cls_feats, targets)
+        cl_loss_2 = 0.5 * self.alpha * self.nt_xent_loss(normed_cls_feats, normed_pos_label_feats, targets)
+        return ce_loss + cl_loss_1 + cl_loss_2
