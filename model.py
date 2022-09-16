@@ -14,8 +14,8 @@ class Transformer(nn.Module):
         for param in base_model.parameters():
             param.requires_grad_(True)
 
-    def forward(self, *args, **kwargs):
-        raw_outputs = self.base_model(*args, **kwargs)
+    def forward(self, inputs):
+        raw_outputs = self.base_model(**inputs)
         hiddens = raw_outputs.last_hidden_state
         cls_feats = hiddens[:, 0, :]
         if self.method in ['ce', 'scl']:

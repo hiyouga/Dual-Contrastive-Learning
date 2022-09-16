@@ -1,7 +1,6 @@
 import os
 import json
 import torch
-import random
 from functools import partial
 from torch.utils.data import Dataset, DataLoader
 
@@ -9,32 +8,23 @@ from torch.utils.data import Dataset, DataLoader
 class MyDataset(Dataset):
 
     def __init__(self, raw_data, label_dict, tokenizer, model_name, method):
+        label_list = list(label_dict.keys()) if method not in ['ce', 'scl'] else []
+        sep_token = ['[SEP]'] if model_name == 'bert' else ['</s>']
         dataset = list()
         for data in raw_data:
             tokens = data['text'].lower().split(' ')
             label_id = label_dict[data['label']]
-            dataset.append((tokens, label_id))
+            dataset.append((label_list + sep_token + tokens, label_id))
         self._dataset = dataset
-        self._method = method
-        self.sep_token = ['[SEP]'] if model_name == 'bert' else ['</s>']
-        self._label_list = list(label_dict.keys())
-        self._num_classes = len(label_dict)
 
     def __getitem__(self, index):
-        tokens, label_id = self._dataset[index]
-        if self._method not in ['ce', 'scl']:
-            rand_idx = [i for i in range(self._num_classes)]
-            random.shuffle(rand_idx)
-            label_list = [self._label_list[i] for i in rand_idx]
-            tokens = label_list + self.sep_token + tokens
-            label_id = rand_idx[label_id]
-        return tokens, label_id
+        return self._dataset[index]
 
     def __len__(self):
         return len(self._dataset)
 
 
-def my_collate(batch, tokenizer):
+def my_collate(batch, tokenizer, method, num_classes):
     tokens, label_ids = map(list, zip(*batch))
     text_ids = tokenizer(tokens,
                          padding=True,
@@ -43,6 +33,10 @@ def my_collate(batch, tokenizer):
                          is_split_into_words=True,
                          add_special_tokens=True,
                          return_tensors='pt')
+    if method not in ['ce', 'scl']:
+        positions = torch.zeros_like(text_ids['input_ids'])
+        positions[:, num_classes:] = torch.arange(0, text_ids['input_ids'].size(1)-num_classes)
+        text_ids['position_ids'] = positions
     return text_ids, torch.tensor(label_ids)
 
 
@@ -71,8 +65,7 @@ def load_data(dataset, data_dir, tokenizer, train_batch_size, test_batch_size, m
         raise ValueError('unknown dataset')
     trainset = MyDataset(train_data, label_dict, tokenizer, model_name, method)
     testset = MyDataset(test_data, label_dict, tokenizer, model_name, method)
-    train_dataloader = DataLoader(trainset, train_batch_size, shuffle=True, num_workers=workers,
-                                  collate_fn=partial(my_collate, tokenizer=tokenizer), pin_memory=True)
-    test_dataloader = DataLoader(testset, test_batch_size, shuffle=False, num_workers=workers,
-                                 collate_fn=partial(my_collate, tokenizer=tokenizer), pin_memory=True)
+    collate_fn = partial(my_collate, tokenizer=tokenizer, method=method, num_classes=len(label_dict))
+    train_dataloader = DataLoader(trainset, train_batch_size, shuffle=True, num_workers=workers, collate_fn=collate_fn, pin_memory=True)
+    test_dataloader = DataLoader(testset, test_batch_size, shuffle=False, num_workers=workers, collate_fn=collate_fn, pin_memory=True)
     return train_dataloader, test_dataloader

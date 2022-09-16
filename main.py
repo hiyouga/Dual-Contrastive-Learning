@@ -38,7 +38,7 @@ class Instructor:
         for inputs, targets in tqdm(dataloader, disable=self.args.backend, ascii=' >='):
             inputs = {k: v.to(self.args.device) for k, v in inputs.items()}
             targets = targets.to(self.args.device)
-            outputs = self.model(**inputs)
+            outputs = self.model(inputs)
             loss = criterion(outputs, targets)
             optimizer.zero_grad()
             loss.backward()
@@ -55,7 +55,7 @@ class Instructor:
             for inputs, targets in tqdm(dataloader, disable=self.args.backend, ascii=' >='):
                 inputs = {k: v.to(self.args.device) for k, v in inputs.items()}
                 targets = targets.to(self.args.device)
-                outputs = self.model(**inputs)
+                outputs = self.model(inputs)
                 loss = criterion(outputs, targets)
                 test_loss += loss.item() * targets.size(0)
                 n_correct += (torch.argmax(outputs['predicts'], -1) == targets).sum().item()
